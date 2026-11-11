@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Easython Local Bridge",
+  "version": "0.3.2",
+  "description": "현재 탭의 URL, HTML과 UI 상태를 Easython 로컬 Python 앱으로 전달합니다.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "action": { "default_title": "Easython: 현재 탭 보내기", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle" }]
+}
+

@@ -1,0 +1,2 @@
+keyring>=25.0.0
+opencv-python>=4.14.0.94
