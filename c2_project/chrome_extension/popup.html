@@ -1,4 +1,21 @@
 <!doctype html>
-<html lang="ko"><meta charset="utf-8"><style>body{font:14px Arial,sans-serif;width:250px;padding:12px}button{width:100%;padding:9px;background:#2563eb;color:white;border:0;border-radius:5px;cursor:pointer}#msg{margin-top:10px;color:#333}</style>
-<h3>Easython</h3><button id="send">현재 탭 정보 보내기</button><div id="msg">Python 앱을 먼저 실행하세요.</div><script src="popup.js"></script>
+<html lang="ko"><meta charset="utf-8">
+<style>
+  body{font:14px Arial,sans-serif;width:270px;padding:12px;color:#172033}
+  button{width:100%;padding:9px;background:#2563eb;color:white;border:0;border-radius:5px;cursor:pointer}
+  #msg{margin-top:10px;color:#333;line-height:1.4}
+  .opacity{margin-top:16px;padding-top:12px;border-top:1px solid #ddd}
+  .opacity-head{display:flex;justify-content:space-between;align-items:center;font-weight:600}
+  input[type=range]{width:100%;accent-color:#2563eb}
+  .opacity-help{display:flex;justify-content:space-between;color:#666;font-size:11px}
+</style>
+<h3>Easython</h3>
+<button id="send">현재 탭 정보 보내기</button>
+<div class="opacity">
+  <div class="opacity-head"><label for="opacity">가이드 투명도</label><output id="opacityValue">10%</output></div>
+  <input id="opacity" type="range" min="0" max="100" step="1" value="10">
+  <div class="opacity-help"><span>불투명</span><span>투명</span></div>
+</div>
+<div id="msg">Python 앱을 먼저 실행하세요.</div>
+<script src="popup.js"></script>
 </html>
