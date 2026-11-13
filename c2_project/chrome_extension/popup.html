@@ -1,16 +1,20 @@
 <!doctype html>
 <html lang="ko"><meta charset="utf-8">
 <style>
-  body{font:14px Arial,sans-serif;width:270px;padding:12px;color:#172033}
+  body{font:14px Arial,sans-serif;width:330px;padding:12px;color:#172033}
   button{width:100%;padding:9px;background:#2563eb;color:white;border:0;border-radius:5px;cursor:pointer}
   #msg{margin-top:10px;color:#333;line-height:1.4}
+  label{display:block;font-weight:600;margin:10px 0 5px}
+  textarea{box-sizing:border-box;width:100%;min-height:76px;resize:vertical;padding:8px;border:1px solid #9aa4b2;border-radius:5px;font:14px Arial,sans-serif}
   .opacity{margin-top:16px;padding-top:12px;border-top:1px solid #ddd}
   .opacity-head{display:flex;justify-content:space-between;align-items:center;font-weight:600}
   input[type=range]{width:100%;accent-color:#2563eb}
   .opacity-help{display:flex;justify-content:space-between;color:#666;font-size:11px}
 </style>
 <h3>Easython</h3>
-<button id="send">현재 탭 정보 보내기</button>
+<label for="goal">원하는 기능을 입력하세요</label>
+<textarea id="goal" maxlength="1200" placeholder="예: 재학 증명서를 출력하고 싶어요"></textarea>
+<button id="send">입력한 기능으로 현재 화면 분석</button>
 <div class="opacity">
   <div class="opacity-head"><label for="opacity">가이드 투명도</label><output id="opacityValue">10%</output></div>
   <input id="opacity" type="range" min="0" max="100" step="1" value="10">

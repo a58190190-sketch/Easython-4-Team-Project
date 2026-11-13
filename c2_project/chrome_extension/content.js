@@ -6,6 +6,9 @@
   let lastGuideKey = "";
   let latestData = null;
   let redrawTimer = null;
+  let lastMonitorRequest = 0;
+  let lastNavigationRequestKey = "";
+  let lastSessionState = null;
 
   function clearOverlay() {
     document.getElementById(ROOT_ID)?.remove();
@@ -34,7 +37,6 @@
   }
 
   function matchesStableSignature(element, guide) {
-    if (guide.stable && guide.dom_id && element.id === guide.dom_id) return true;
     return ["aria_label", "title", "placeholder", "name"].some(key => {
       if (!guide[key]) return false;
       const attribute = key === "aria_label" ? "aria-label" : key;
@@ -45,11 +47,16 @@
   function resolveTarget(guide) {
     if (!guide) return null;
     const expectedLabel = String(guide.label || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
-    const idTarget = guide.dom_id ? document.getElementById(guide.dom_id) : null;
-    if (idTarget && isVisible(idTarget) && (elementLabel(idTarget) === expectedLabel || matchesStableSignature(idTarget, guide))) return idTarget;
-    const easythonTarget = document.querySelector(`[data-easython-id="${CSS.escape(String(guide.target_id || ""))}"]`);
+    if (guide.info_region) {
+      const infoTarget = document.querySelector('[data-easython-info-id="' + CSS.escape(String(guide.target_id || "")) + '"]');
+      if (infoTarget && isVisible(infoTarget)) return infoTarget;
+    }
+    const easythonTarget = document.querySelector('[data-easython-id="' + CSS.escape(String(guide.target_id || "")) + '"]');
     if (easythonTarget && elementLabel(easythonTarget) === expectedLabel && isVisible(easythonTarget)) return easythonTarget;
-    const nodes = document.querySelectorAll('button,a,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="searchbox"]');
+    const standardSelector = 'button,a,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="searchbox"]';
+    const customPointerSelector = guide.click_detection === "pointer_cursor_heuristic" && /^[a-z]+$/.test(String(guide.tag || ""))
+      ? "," + String(guide.tag) : "";
+    const nodes = document.querySelectorAll(standardSelector + customPointerSelector);
     const candidates = [];
     for (const node of nodes) {
       if (!isVisible(node) || (elementLabel(node) !== expectedLabel && !matchesStableSignature(node, guide))) continue;
@@ -92,6 +99,9 @@
     if (showScrollHints && hints.length === 0 && documentHeight > innerHeight * 1.03 && scrollY > 0) {
       hints.push({ arrow: "↑", label: "위쪽 방향으로 스크롤", edge: "top" });
     }
+    if (showScrollHints && hints.length === 0 && display?.monitoring) {
+      hints.push({ arrow: "↕", label: "스크롤하거나 메뉴를 열어 UI 표시", edge: "bottom" });
+    }
     const key = `${guide?.id || ""}:${transparency}:${target ? elementLabel(target) : ""}:${rect ? `${Math.round(rect.left)}:${Math.round(rect.top)}:${Math.round(rect.width)}:${Math.round(rect.height)}` : ""}:${hints.map(hint => hint.edge).join(",")}`;
     if (!target && !hints.length) { clearOverlay(); return; }
     if (lastGuideKey === key) return;
@@ -105,6 +115,11 @@
       font: "700 14px/1.35 Arial, sans-serif"
     });
     applyTransparency(host, transparency);
+    // Keep the guide's geometry and text layout isolated from site-wide CSS.
+    const layer = host.attachShadow({ mode: "closed" });
+    // Attach before measuring the card; detached fixed elements report zero
+    // size, which previously let the card land on top of the target graphic.
+    document.documentElement.appendChild(host);
 
     if (target && rect) {
       const ring = document.createElement("div");
@@ -114,7 +129,7 @@
         border: `2px solid ${GUIDE_RED}`, borderRadius: "6px", boxSizing: "border-box",
         background: "transparent", boxShadow: "none"
       });
-      host.appendChild(ring);
+      layer.appendChild(ring);
       if (guide.action_text) {
         const card = document.createElement("div");
         card.textContent = guide.action_card_text || guide.action_text;
@@ -124,7 +139,7 @@
           borderRadius: "6px", boxSizing: "border-box", whiteSpace: "normal", lineHeight: "1.35",
           font: "600 13px/1.35 Arial, sans-serif", boxShadow: "0 2px 8px rgba(0,0,0,.22)", pointerEvents: "none"
         });
-        host.appendChild(card);
+        layer.appendChild(card);
         const cardRect = card.getBoundingClientRect();
         const gap = 10;
         const candidates = [
@@ -136,6 +151,19 @@
           [8, innerHeight - cardRect.height - 8],
           [innerWidth - cardRect.width - 8, innerHeight - cardRect.height - 8]
         ];
+        const offsetStep = Math.max(24, Math.min(64, cardRect.height + gap));
+        for (let offset = offsetStep; offset < Math.max(innerWidth, innerHeight); offset += offsetStep) {
+          candidates.push(
+            [rect.left + offset, rect.top - cardRect.height - gap],
+            [rect.left - offset, rect.top - cardRect.height - gap],
+            [rect.left + offset, rect.bottom + gap],
+            [rect.left - offset, rect.bottom + gap],
+            [rect.right + gap, rect.top + offset],
+            [rect.right + gap, rect.top - offset],
+            [rect.left - cardRect.width - gap, rect.top + offset],
+            [rect.left - cardRect.width - gap, rect.top - offset]
+          );
+        }
         const guideRect = { left: rect.left - 5, right: rect.right + 5, top: rect.top - 5, bottom: rect.bottom + 5 };
         const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
         const controls = Array.from(document.querySelectorAll('button,a,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"]'))
@@ -149,6 +177,9 @@
         if (location) {
           card.style.left = location[0] + "px";
           card.style.top = location[1] + "px";
+          const placed = card.getBoundingClientRect();
+          const placedRect = { left: placed.left, right: placed.right, top: placed.top, bottom: placed.bottom };
+          if (intersects(placedRect, guideRect)) card.remove();
         } else {
           card.remove();
         }
@@ -166,9 +197,8 @@
       if (hint.edge === "right") Object.assign(cue.style, { right: "8px", top: "50%", transform: "translateY(-50%)" });
       if (hint.edge === "top") Object.assign(cue.style, { top: "8px", left: "50%", transform: "translateX(-50%)" });
       if (hint.edge === "bottom") Object.assign(cue.style, { bottom: "8px", left: "50%", transform: "translateX(-50%)" });
-      host.appendChild(cue);
+      layer.appendChild(cue);
     }
-    document.documentElement.appendChild(host);
   }
 
   async function pollGuide() {
@@ -177,16 +207,68 @@
       if (!response.ok) return;
       const data = await response.json();
       const pageKey = `${location.origin}${location.pathname}`;
+      const sessionState = Boolean(data.navigation_active);
+      if (lastSessionState !== sessionState) {
+        lastSessionState = sessionState;
+        chrome.runtime.sendMessage({ type: "EASYTHON_SESSION_STATE", active: sessionState, goal: data.guide?.goal || data.display?.goal || "" }).catch(() => {});
+      }
+      const pendingGuide = data.guide?.goal ? data.guide : data.display?.goal ? data.display : null;
+      if (sessionState && pendingGuide && pendingGuide.page_key !== pageKey && lastNavigationRequestKey !== location.href) {
+        lastNavigationRequestKey = location.href;
+        requestMonitorCapture("EASYTHON_NAVIGATE_CAPTURE");
+      }
       const guide = data.guide?.page_key === pageKey ? data.guide : null;
       const display = data.display?.page_key === pageKey ? data.display : null;
       latestData = { guide, display, transparency: data.transparency ?? 10 };
       const currentOverlay = document.getElementById(ROOT_ID);
       if (currentOverlay) applyTransparency(currentOverlay, latestData.transparency);
       drawGuide(guide, display, latestData.transparency);
+      if (display?.monitoring && Date.now() - lastMonitorRequest > 1800) {
+        lastMonitorRequest = Date.now();
+        requestMonitorCapture();
+      }
     } catch (_) {
       latestData = null;
       clearOverlay();
     }
+  }
+
+  function requestMonitorCapture(type = "EASYTHON_MONITOR_CAPTURE") {
+    const selectors = 'button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]';
+    const elements = Array.from(document.querySelectorAll(selectors)).filter(element => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0 &&
+        rect.width >= 2 && rect.height >= 2 && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
+    }).slice(0, 180).map(element => {
+      const rect = element.getBoundingClientRect();
+      const label = rawElementLabel(element);
+      const disabled = Boolean(element.matches(":disabled") || element.closest('[aria-disabled="true"]'));
+      const action = element.matches('button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]');
+      return {
+        id: "m" + Math.round(rect.left) + "_" + Math.round(rect.top), dom_id: element.id || "",
+        tag: element.tagName.toLowerCase(), role: element.getAttribute("role") || "", label,
+        aria_label: element.getAttribute("aria-label") || "", title: element.title || "",
+        placeholder: element.getAttribute("placeholder") || "", name: element.getAttribute("name") || "",
+        type: element.getAttribute("type") || "", action_type: element.matches('input[type="search"],[role="searchbox"]') ? "search_input" : "control",
+        click_detection: "semantic", actionable: action && !disabled && getComputedStyle(element).pointerEvents !== "none",
+        hover_actionable: false, hover_events: [], hover_handler_hints: [], hover_reveals: [], options: [],
+        disabled, in_view: true, stable: false,
+        x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height)
+      };
+    });
+    chrome.runtime.sendMessage({
+      type,
+      url: location.href,
+      title: document.title,
+      viewport: {
+        width: innerWidth, height: innerHeight,
+        document_width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
+        document_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0),
+        scroll_x: Math.round(scrollX), scroll_y: Math.round(scrollY), device_pixel_ratio: devicePixelRatio
+      },
+      elements
+    }).catch(() => {});
   }
 
   // Remove a banner injected by an older extension build before drawing the outline-only guide.
