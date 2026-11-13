@@ -90,6 +90,8 @@ button.addEventListener("click", async () => {
         ));
         const candidates = Array.from(new Set([...baseCandidates, ...popularKeywordElements]));
         const elements = [];
+        const hoverProbeCandidates = [];
+        const interactiveSelector = 'button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[onclick]';
         for (const el of candidates) {
           const style = getComputedStyle(el);
           if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
@@ -100,9 +102,14 @@ button.addEventListener("click", async () => {
           const centerX = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
           const centerY = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
           const hitStack = inView ? document.elementsFromPoint(centerX, centerY) : [];
+          const pointerReachable = inView && hitStack.some(hit => hit === el || el.contains(hit) || hit.contains(el));
           const semanticAction = el.matches('button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"]') || el.hasAttribute("oncontextmenu");
           const clickReachable = inView && !disabled && style.pointerEvents !== "none" && (semanticAction || typeof el.onclick === "function" || el.hasAttribute("onclick")) &&
             hitStack.some(hit => hit === el || el.contains(hit) || hit.contains(el));
+          const hoverHandlerHints = ["onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
+            el.hasAttribute(name) || typeof el[name] === "function"
+          );
+          if (pointerReachable && !clickReachable && hoverProbeCandidates.length < 30) hoverProbeCandidates.push(el);
           const actionType = el.matches('input[type="search"],[role="searchbox"]') ? "search_input"
             : el.matches('input[type="text"],input:not([type]),textarea') ? "text_input"
             : el.matches('input[type="checkbox"],input[type="radio"]') ? "toggle"
@@ -129,6 +136,9 @@ button.addEventListener("click", async () => {
             is_search: (el.matches('input,[role="searchbox"],textarea') && /search|검색/i.test([el.type, el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.closest("form")?.getAttribute("role")].filter(Boolean).join(" "))),
             popular_keyword: popularKeywordElements.has(el),
             actionable: clickReachable,
+            hover_handler_hints: hoverHandlerHints,
+            hover_reveals: [],
+            hover_actionable: false,
             disabled,
             action_type: actionType,
             context_menu_hint: el.hasAttribute("oncontextmenu"),
@@ -140,6 +150,49 @@ button.addEventListener("click", async () => {
             in_view: inView
           });
           if (elements.length >= 250) break;
+        }
+        const describeVisibleInteractions = () => Array.from(document.querySelectorAll(interactiveSelector))
+          .filter(el => {
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 ||
+              rect.width < 2 || rect.height < 2 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return false;
+            const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
+            const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
+            return document.elementsFromPoint(x, y).some(hit => hit === el || el.contains(hit) || hit.contains(el));
+          })
+          .map(el => ({
+            node: el,
+            label: (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || el.tagName).replace(/\s+/g, " ").trim().slice(0, 100),
+            signature: `${el.tagName}:${el.id}:${el.getAttribute("role") || ""}:${el.getAttribute("aria-label") || ""}:${el.innerText || ""}`.slice(0, 240)
+          }));
+        for (const el of hoverProbeCandidates) {
+          const beforeHover = new Set(describeVisibleInteractions().map(item => item.signature));
+          const rect = el.getBoundingClientRect();
+          const x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
+          const y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
+          const hoverEvents = ["pointerover", "pointerenter", "mouseover", "mouseenter"];
+          for (const type of hoverEvents) {
+            const EventClass = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+            el.dispatchEvent(new EventClass(type, { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse" }));
+          }
+          await new Promise(resolve => setTimeout(resolve, 90));
+          const revealed = describeVisibleInteractions()
+            .filter(item => !beforeHover.has(item.signature) && item.node !== el && !item.node.matches(":disabled") && !item.node.closest('[aria-disabled="true"]'))
+            .map(item => item.label).filter(Boolean).slice(0, 8);
+          const ownHandlers = ["onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
+            el.hasAttribute(name) || typeof el[name] === "function"
+          );
+          const index = elements.findIndex(item => item.element === el);
+          if (index >= 0) {
+            elements[index].hover_events = hoverEvents.filter((_, eventIndex) => eventIndex % 2 === 0);
+            elements[index].hover_handler_hints = Array.from(new Set([...elements[index].hover_handler_hints, ...ownHandlers]));
+            elements[index].hover_reveals = revealed;
+            elements[index].hover_actionable = revealed.length > 0;
+          }
+          el.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse" }));
+          el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, composed: true, clientX: x, clientY: y }));
+          await new Promise(resolve => setTimeout(resolve, 40));
         }
         const samples = elements.map(item => ({
           element: item.element,
@@ -174,6 +227,8 @@ button.addEventListener("click", async () => {
                 (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2,
                 (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2
               ).some(hit => hit === sample.element || sample.element.contains(hit) || hit.contains(sample.element))),
+            hover_actionable: Boolean(item.hover_actionable && rect && sample.element.isConnected &&
+              rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight),
             disabled: Boolean(sample.element.matches(":disabled") || sample.element.closest('[aria-disabled="true"]'))
           };
         });
