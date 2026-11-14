@@ -153,10 +153,7 @@ class Handler(BaseHTTPRequestHandler):
                 page = {
                     "url": data["url"][:2000], "title": str(data.get("title", ""))[:500],
                     "html_chars": 0, "controls": [], "viewport": viewport,
-<<<<<<< HEAD
                     "elements": elements,
-=======
-                    "elements": sanitize_control_metadata(data.get("elements")),
                     "previous_guided_action": {
                         "label": str(guide.get("label", ""))[:100],
                         "href": str(guide.get("href", ""))[:300],
@@ -166,7 +163,6 @@ class Handler(BaseHTTPRequestHandler):
                         "source_url": str(old_page.get("url", ""))[:2000],
                     } if guide else {},
                     "completed_guided_actions": completed_actions,
->>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
                     "has_popular_keywords": False, "popular_keywords": [],
                     "vision": {"ok": False, "width": int(viewport.get("width", 0) or 0),
                                "height": int(viewport.get("height", 0) or 0), "region_count": 0},

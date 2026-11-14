@@ -305,27 +305,18 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
                 return False
             destination_path = destination.path.rstrip("/") or current_path
             return destination_path == current_path
-<<<<<<< HEAD
-        matches = [item for item in matches if stays_on_current_page(item[4])]
-    matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
-    target = matches[0][4] if matches else None
-    has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
-    search_intent = bool(re.search(r"검색|찾|조회|출력|발급|신청", goal))
-    search_query = search_query_from_goal(goal) if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) else ""
-    if (has_popular_keywords or search_intent) and not is_visual_info_request(goal):
-=======
         if repository_navigation_requested(goal):
             for item in matches:
-                if is_repository_entry(item[3]):
-                    item[3]["repository_entry"] = True
+                if is_repository_entry(item[4]):
+                    item[4]["repository_entry"] = True
         matches = [
             item for item in matches
-            if stays_on_current_page(item[3])
-            or item[3].get("repository_entry")
-            or str(item[3].get("label", "")).casefold() in match_folded
+            if stays_on_current_page(item[4])
+            or item[4].get("repository_entry")
+            or str(item[4].get("label", "")).casefold() in match_folded
         ]
-    matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    target = matches[0][3] if matches else None
+    matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+    target = matches[0][4] if matches else None
     if search_already_submitted and target is None:
         query_terms = [
             term.casefold() for term in re.findall(r"[가-힣]{2,}|[a-z0-9]{2,}", requested_search_query, re.IGNORECASE)
@@ -365,8 +356,7 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             with state_lock:
                 state["planned_route"] = route
                 state["route_position"] = route_position
-    if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) and not search_already_submitted:
->>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
+    if (has_popular_keywords or search_intent) and not visual_info_request and not search_already_submitted:
         search_fields = [element for element in page.get("elements", []) if element.get("is_search") and element.get("in_view") and (element.get("actionable") or not accessibility_check)]
         search_fields.sort(key=lambda element: (bool(element.get("stable")), bool(element.get("actionable")), len(str(element.get("label", "")))), reverse=True)
         action_names_search = any(str(element.get("label", "")).casefold() in match_folded for element in search_fields)
