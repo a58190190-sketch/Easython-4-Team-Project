@@ -2,8 +2,8 @@
 
 ## 설치 및 AI 제공자 설정
 
-1. 프로젝트 파일을 모두 같은 폴더에 둡니다. Python이 없다면 `install.bat`을 실행해 동봉된 Python 3.14.10 설치를 시작하고, 완료 후 `install.bat`을 다시 실행합니다.
-2. `install.bat`이 `requirements.txt`에 적힌 라이브러리를 설치하고 설치 결과를 검증합니다. `run.bat` 또는 `app.py` 실행 시에도 해당 파일을 읽어 모든 패키지의 설치 여부와 버전 조건을 확인합니다. 새 라이브러리를 `requirements.txt`에 추가하면 확인 항목에도 자동 반영됩니다.
+1. 프로젝트 파일을 모두 같은 폴더에 둡니다. `install.bat` 하나가 Python 설치 여부를 먼저 확인하고, 없으면 동봉된 Python 3.14.10을 설치한 다음 이어서 라이브러리 설치와 검증을 진행합니다.
+2. `install.bat`은 프로젝트 전용 `.venv`에 `requirements.txt` 라이브러리를 설치하고 버전 조건을 검증합니다. 새 라이브러리를 `requirements.txt`에 추가하면 다음 설치 때 자동으로 반영됩니다. 직접 앱을 실행할 때는 `.venv\Scripts\python.exe app.py`를 사용하세요.
 3. `run.bat`을 실행합니다. 앱은 API 키 없이도 시작합니다. 메인 화면의 **AI 제공자**에서 NVIDIA NIM 또는 Groq를 선택한 뒤 **API 키 설정**을 누릅니다. Groq 기본 모델은 `openai/gpt-oss-20b`입니다. 발급 페이지에서 키를 만든 후 입력하면 짧은 연결 확인 요청을 보내고 Windows 자격 증명 저장소에 보관합니다. 확인 요청에는 제공자 계정 한도나 요금이 적용될 수 있습니다.
 
 기본 GLM-5.3-Flash 요청에는 `reasoning_effort=max`와 최대 출력 토큰 4,096개를 지정합니다. NVIDIA API 요청량 추정에도 이 출력 한도를 포함합니다.
@@ -11,6 +11,8 @@
 5. Chrome에서 `chrome://extensions`를 열고 개발자 모드를 켭니다. **압축해제된 확장 프로그램을 로드**를 눌러 `chrome_extension` 폴더를 선택합니다.
 
 API 키 발급은 NVIDIA의 [API Catalog Quickstart](https://docs.api.nvidia.com/nim/docs/api-quickstart)를 참고하세요. Python 설치 파일은 Windows x64용 Python 3.14.10이며 SHA-256은 `92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965`입니다. Chrome 확장 프로그램 로드는 최초 1회 수동으로 해야 합니다.
+
+Easython을 제거하려면 `uninstall.bat`을 실행하세요. 전용 `.venv`와 그 안의 라이브러리를 제거하며, Easython 설치 기록이 있는 Python 3.14.10만 별도로 확인 후 제거합니다. 전역 Python, 전역 패키지, API 키, 재설치용 Python 설치 파일은 보존합니다.
 
 ## 사용 순서
 

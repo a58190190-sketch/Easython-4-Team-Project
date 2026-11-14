@@ -1,17 +1,27 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Checking required Python libraries from requirements.txt...
-py -3 check_requirements.py
-if errorlevel 1 (
-    echo.
-    echo Easython has missing or incompatible libraries. Run install.bat and try again.
+set "EASYTHON_PYTHON=%~dp0.venv\Scripts\python.exe"
+
+if not exist "%EASYTHON_PYTHON%" (
+    echo Easython's isolated Python environment is missing.
+    echo Run install.bat to install Python and the required libraries.
     pause
     exit /b 1
 )
-py -3 app.py
+
+echo Checking required libraries in Easython's isolated environment...
+"%EASYTHON_PYTHON%" check_requirements.py
 if errorlevel 1 (
     echo.
-    echo Easython could not start. Run install.bat first and check the error above.
+    echo Required libraries are missing or incompatible. Run install.bat and try again.
+    pause
+    exit /b 1
+)
+
+"%EASYTHON_PYTHON%" app.py
+if errorlevel 1 (
+    echo.
+    echo Easython could not start. Review the error above.
     pause
 )

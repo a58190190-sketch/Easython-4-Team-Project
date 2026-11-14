@@ -19,7 +19,7 @@
 | `html.parser` | 버튼·링크·입력 UI 요소 추출 |
 | `json`, `threading`, `queue` 등 | 데이터 처리 및 백그라운드 요청 |
 
-`install.bat`이 `requirements.txt`에 따라 라이브러리를 설치한 뒤 검증합니다. `run.bat`과 `app.py` 직접 실행도 같은 파일의 모든 패키지 이름과 버전 조건을 확인하며, 새 의존성을 추가하면 자동으로 누락/버전 불일치 목록에 포함합니다. API 요청은 NVIDIA NIM Chat Completions 엔드포인트를 사용합니다. 화면 이미지 자체는 NIM API로 보내지 않습니다.
+`install.bat`은 프로젝트 전용 `.venv`에 `requirements.txt`의 라이브러리를 설치한 뒤 검증합니다. `run.bat`은 이 가상환경의 패키지 버전 조건을 확인합니다. 직접 실행할 때는 `.venv\Scripts\python.exe app.py`를 사용합니다. 새 의존성을 추가하면 다음 설치 및 실행 확인에 자동 반영됩니다. `uninstall.bat`은 프로젝트 전용 `.venv`만 제거하므로 전역 Python 패키지를 지우지 않습니다. API 요청은 NVIDIA NIM 또는 Groq Chat Completions 엔드포인트를 사용합니다. 화면 이미지 자체는 AI API로 보내지 않습니다.
 
 현재 페이지의 HTML 크기와 추출한 UI 요소 수를 보고 요청 토큰량을 추정합니다. 세션 안에서 분당 최대 6회와 추정 20,000 토큰을 앱 내부 목표로 삼고, 큰 페이지일수록 더 길게 간격을 둡니다. 이는 NVIDIA가 보장한 계정별 한도가 아니며 추정 기반 보호 장치입니다. NIM이 429를 반환하면 앱이 최대 3회까지 대기 후 재시도합니다.
 
