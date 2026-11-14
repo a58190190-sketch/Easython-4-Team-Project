@@ -31,7 +31,7 @@ PROVIDER_CONFIG = {
     "Groq": {"endpoint": GROQ_CHAT_URL, "default_model": "openai/gpt-oss-20b", "key_user": "groq_api_key", "key_label": "Groq API 키", "key_url": "https://console.groq.com/keys"},
 }
 MAX_BODY = 12_000_000
-state: dict[str, Any] = {"last_seen": 0.0, "capture": None, "capture_at": None, "guide": None, "display": None, "guide_transparency": 10, "planned_route": "", "route_position": "", "accessibility_check": False, "analyzed_sites": set(), "monitor_signature": "", "monitor_at": 0.0, "navigation_session": False}
+state: dict[str, Any] = {"last_seen": 0.0, "capture": None, "capture_at": None, "guide": None, "display": None, "guide_transparency": 10, "planned_route": "", "route_position": "", "accessibility_check": False, "analyzed_sites": set(), "monitor_signature": "", "monitor_at": 0.0, "navigation_session": False, "analysis_status": {"busy": False, "progress": 0, "phase": "분석 대기"}}
 state_lock = threading.Lock()
 ui_events: queue.Queue[tuple[str, Any]] = queue.Queue()
 guide_counter = 0
@@ -618,7 +618,8 @@ class Handler(BaseHTTPRequestHandler):
                 display = state.get("display")
                 transparency = state.get("guide_transparency", 10)
                 navigation_active = bool(state.get("navigation_session", False))
-            self.respond(200, {"guide": guide, "display": display, "transparency": transparency, "navigation_active": navigation_active})
+                analysis = dict(state.get("analysis_status") or {})
+            self.respond(200, {"guide": guide, "display": display, "transparency": transparency, "navigation_active": navigation_active, "analysis": analysis})
             return
         if self.path != "/status":
             self.respond(404, {"error": "not found"})
@@ -1166,9 +1167,19 @@ def main() -> None:
         transcript.see("end")
         transcript.configure(state="disabled")
 
+    def publish_analysis_status(indeterminate: bool = False, phase: str | None = None) -> None:
+        with state_lock:
+            state["analysis_status"] = {
+                "busy": analysis_busy,
+                "progress": max(0, min(100, int(analysis_progress))),
+                "phase": phase or (analysis_phase if analysis_busy else ("분석 완료" if analysis_progress >= 100 else "분석 대기")),
+                "indeterminate": bool(analysis_busy and indeterminate),
+            }
+
     def refresh_analysis_progress() -> None:
         nonlocal analysis_progress, analysis_dot_index, analysis_animation_job
         if not analysis_busy:
+            publish_analysis_status()
             analysis_animation_job = None
             return
         elapsed = max(0.0, time.monotonic() - analysis_started_at)
@@ -1177,6 +1188,7 @@ def main() -> None:
         analysis_progress_bar.configure(value=analysis_progress)
         dots = "." * (analysis_dot_index % 4)
         analysis_progress_label.config(text=f"분석중{dots} · 예상 진행률 {int(analysis_progress)}% · {analysis_phase}")
+        publish_analysis_status("분석 요청 중" in analysis_phase)
         analysis_dot_index += 1
         analysis_animation_job = root.after(300, refresh_analysis_progress)
 
@@ -1254,6 +1266,7 @@ def main() -> None:
         analysis_progress = 5.0
         analysis_started_at = time.monotonic()
         analysis_phase = "현재 화면만 분석 중" if screen_only else "사이트 구조 확인 중"
+        publish_analysis_status()
         analysis_dot_index = 0
         analysis_progress_bar.configure(value=analysis_progress)
         analysis_progress_label.config(text=f"예상 진행률 {int(analysis_progress)}% · {analysis_phase}")
@@ -1356,6 +1369,7 @@ def main() -> None:
                     analysis_progress = 100.0
                     analysis_progress_bar.configure(value=100)
                     request_failed = answer.startswith("분석 오류:")
+                    publish_analysis_status(phase="분석 오류" if request_failed else "분석 완료")
                     if not request_failed:
                         analyzed_sites.add(site_key)
                         with state_lock:
@@ -1409,6 +1423,7 @@ def main() -> None:
                     elif "요청 한도" in status_text:
                         analysis_phase = status_text
                         analysis_progress = max(analysis_progress, 45.0)
+                    publish_analysis_status("분석 요청 중" in analysis_phase)
                     analysis_status_label.config(text=status_text, fg="#555")
         except queue.Empty:
             pass
