@@ -137,10 +137,36 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(200, {"ok": True, "unchanged": True})
                     return
                 viewport = data.get("viewport") if isinstance(data.get("viewport"), dict) else {}
+                completed_actions = [
+                    item for item in (old_page.get("completed_guided_actions") or [])
+                    if isinstance(item, dict)
+                ]
+                if guide.get("label"):
+                    completed_actions.append({
+                        "label": str(guide.get("label", ""))[:100],
+                        "href": str(guide.get("href", ""))[:300],
+                        "action_type": str(guide.get("action_type", ""))[:30],
+                        "is_search": bool(guide.get("is_search", False)),
+                        "search_query": str(guide.get("search_query", ""))[:200],
+                    })
+                completed_actions = completed_actions[-8:]
                 page = {
                     "url": data["url"][:2000], "title": str(data.get("title", ""))[:500],
                     "html_chars": 0, "controls": [], "viewport": viewport,
+<<<<<<< HEAD
                     "elements": elements,
+=======
+                    "elements": sanitize_control_metadata(data.get("elements")),
+                    "previous_guided_action": {
+                        "label": str(guide.get("label", ""))[:100],
+                        "href": str(guide.get("href", ""))[:300],
+                        "action_type": str(guide.get("action_type", ""))[:30],
+                        "is_search": bool(guide.get("is_search", False)),
+                        "search_query": str(guide.get("search_query", ""))[:200],
+                        "source_url": str(old_page.get("url", ""))[:2000],
+                    } if guide else {},
+                    "completed_guided_actions": completed_actions,
+>>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
                     "has_popular_keywords": False, "popular_keywords": [],
                     "vision": {"ok": False, "width": int(viewport.get("width", 0) or 0),
                                "height": int(viewport.get("height", 0) or 0), "region_count": 0},
@@ -197,6 +223,27 @@ class Handler(BaseHTTPRequestHandler):
                 if not goal:
                     self.respond(400, {"error": "goal is required"})
                     return
+                old_page = state.get("capture") or {}
+                old_guide = state.get("guide") or {}
+                old_display = state.get("display") or {}
+                old_goal = str(old_guide.get("goal") or old_display.get("goal") or "").strip()
+                continue_external_session = bool(
+                    state.get("navigation_session") and old_goal and old_goal == goal
+                    and urlsplit(str(old_page.get("url", ""))).netloc.lower() != urlsplit(data["url"]).netloc.lower()
+                )
+                completed_actions = [
+                    item for item in (old_page.get("completed_guided_actions") or [])
+                    if isinstance(item, dict)
+                ] if continue_external_session else []
+                if continue_external_session and old_guide.get("label"):
+                    completed_actions.append({
+                        "label": str(old_guide.get("label", ""))[:100],
+                        "href": str(old_guide.get("href", ""))[:300],
+                        "action_type": str(old_guide.get("action_type", ""))[:30],
+                        "is_search": bool(old_guide.get("is_search", False)),
+                        "search_query": str(old_guide.get("search_query", ""))[:200],
+                    })
+                completed_actions = completed_actions[-8:]
                 raw_html = data.get("html") if isinstance(data.get("html"), str) else ""
                 screenshot = data.get("screenshot") if isinstance(data.get("screenshot"), str) else ""
                 if screenshot and not screenshot.startswith("data:image/"):
@@ -209,6 +256,8 @@ class Handler(BaseHTTPRequestHandler):
                     "html_chars": len(raw_html),
                     "html_fallback": bool(raw_html),
                     "controls": inventory(raw_html),
+                    "previous_guided_action": completed_actions[-1] if completed_actions else {},
+                    "completed_guided_actions": completed_actions,
                     "viewport": data.get("viewport") if isinstance(data.get("viewport"), dict) else {},
                     "elements": sanitize_control_metadata(data.get("elements")),
                     "has_popular_keywords": bool(data.get("has_popular_keywords")),

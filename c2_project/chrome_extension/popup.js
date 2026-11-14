@@ -27,6 +27,7 @@ goalInput.addEventListener("keydown", event => {
   }
 });
 
+<<<<<<< HEAD
 async function loadGuideSettings() {
   try {
     siteAccessGranted = await chrome.permissions.contains(SITE_ACCESS);
@@ -36,14 +37,53 @@ async function loadGuideSettings() {
   try {
     bridgeFetch("/heartbeat", { method: "POST", body: "{}" }).catch(() => {});
     const response = await bridgeFetch("/guide");
+=======
+async function ensureBridgePermission() {
+  if (!bridgeGranted) {
+    bridgeGranted = await chrome.permissions.request({ origins: [BRIDGE_ORIGIN] });
+  }
+  return bridgeGranted;
+}
+
+async function showPendingExternalNavigation() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !tab.url) return false;
+    const key = "easython-session-" + tab.id;
+    const stored = await chrome.storage.session.get(key);
+    const session = stored[key];
+    if (!session?.pending_url || new URL(tab.url).origin === new URL(session.origin).origin) return false;
+    if (!goalInput.value && session.goal) goalInput.value = session.goal;
+    msg.textContent = "외부 웹사이트로 이동했습니다. Chrome 권한은 사이트 이동 후 유지되지 않으므로, 현재 탭 분석을 눌러 같은 목표로 이어서 안내받으세요.";
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function loadGuideSettings() {
+  try {
+    const pendingExternalNavigation = await showPendingExternalNavigation();
+    bridgeGranted = await chrome.permissions.contains({ origins: [BRIDGE_ORIGIN] });
+    if (!bridgeGranted) {
+      if (!pendingExternalNavigation) msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
+      return;
+    }
+    fetch("http://127.0.0.1:8765/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
+>>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
     if (!response.ok) return;
     const data = await response.json();
     renderAnalysisStatus(data.analysis);
     opacity.value = String(data.transparency ?? 10);
     opacityValue.value = opacity.value + "%";
+<<<<<<< HEAD
     msg.textContent = siteAccessGranted
       ? "목표를 달성할 때까지 다음 페이지와 새 탭에서도 안내를 이어갑니다."
       : "버튼을 누르면 페이지를 옮겨도 안내를 이어갈 수 있도록 사이트 접근 권한을 한 번 요청합니다.";
+=======
+    if (!pendingExternalNavigation) msg.textContent = "현재 탭에서 동작합니다. 다른 사이트로 이동하면 확장을 다시 눌러 이어서 분석하세요.";
+>>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
   } catch (_) {
     msg.textContent = "Python 앱을 먼저 실행하세요.";
   }
@@ -202,6 +242,9 @@ button.addEventListener("click", async () => {
           const hoverHandlerHints = ["onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
             el.hasAttribute(name) || typeof el[name] === "function"
           );
+          const interactionEvents = ["onclick", "ondblclick", "oncontextmenu", "onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
+            el.hasAttribute(name) || typeof el[name] === "function"
+          );
           if (pointerReachable && !clickReachable && hoverProbeCandidates.length < 30) hoverProbeCandidates.push(el);
           const actionType = el.matches('input[type="search"],[role="searchbox"]') ? "search_input"
             : el.matches('input[type="text"],input:not([type]),textarea') ? "text_input"
@@ -225,11 +268,14 @@ button.addEventListener("click", async () => {
             placeholder: el.getAttribute("placeholder") || "",
             name: el.getAttribute("name") || "",
             href: el instanceof HTMLAnchorElement ? el.pathname : "",
+            external_link: el instanceof HTMLAnchorElement && /^https?:$/.test(el.protocol) && el.origin !== location.origin,
             type: el.getAttribute("type") || "",
             is_search: (el.matches('input,[role="searchbox"],textarea') && /search|검색/i.test([el.type, el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.closest("form")?.getAttribute("role")].filter(Boolean).join(" "))),
             popular_keyword: popularKeywordElements.has(el),
             actionable: clickReachable,
             click_detection: semanticAction ? "semantic" : likelyCustomClick ? "pointer_cursor_heuristic" : "event_attribute",
+            events: interactionEvents,
+            double_click_hint: interactionEvents.includes("ondblclick"),
             hover_handler_hints: hoverHandlerHints,
             hover_reveals: [],
             hover_actionable: false,
@@ -325,26 +371,28 @@ button.addEventListener("click", async () => {
           };
         });
         const infoRegions = [];
-        const infoIntent = /확인|보기|보여|표시|열람|읽어|목록|정보|기여자|contributors?|show|display|view|read|list/i.test(requestedGoal || "");
-        const stopTerms = new Set(["현재", "화면", "사이트", "웹사이트", "정보", "내용", "목록", "전체", "모두", "확인", "보기", "표시", "읽어", "보고", "싶어요", "싶어", "해주세요", "해줘", "있는", "에서", "으로", "항목"]);
+        const infoIntent = /확인|보기|보여|표시|열람|읽어|목록|명단|현황|상태|이력|내역|정보|내용|자료|기록|show|display|view|read|list/i.test(requestedGoal || "");
+        const stopTerms = new Set(["현재", "화면", "사이트", "웹사이트", "정보", "내용", "목록", "전체", "모두", "확인", "보기", "표시", "열람", "읽어", "보고", "싶어요", "싶어", "해주세요", "해줘", "보여줘", "보여", "있는", "에서", "으로", "에게", "항목", "관련"]);
         const requestedTerms = (requestedGoal || "").toLocaleLowerCase().match(/[가-힣]{2,}|[a-z0-9]{2,}/g) || [];
         const queryTerms = requestedTerms.filter(term => !stopTerms.has(term));
-        const headingNodes = infoIntent ? Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"],caption,legend,summary,[role="rowheader"],[role="columnheader"]')) : [];
-        const scoredHeadings = headingNodes.map(heading => {
-          const label = (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
-          const folded = label.toLocaleLowerCase();
-          let score = queryTerms.reduce((sum, term) => sum + (folded.includes(term) ? 1 : 0), 0);
-          const headingAliases = [
-            [/기여자/i, /contributors?/i], [/레포지토리|저장소/i, /repository|repo/i],
-            [/릴리스|출시/i, /release|changelog/i], [/공지|소식/i, /announcement|news/i],
-            [/문서|가이드/i, /documentation|docs|guide/i], [/회원|멤버|구성원/i, /members?/i],
-            [/이슈/i, /issues?/i], [/커밋/i, /commits?/i], [/활동/i, /activity|contributions?/i]
-          ];
-          for (const [goalPattern, headingPattern] of headingAliases) {
-            if (goalPattern.test(requestedGoal || "") && headingPattern.test(label)) score += 2;
-          }
+        const headingNodes = infoIntent ? Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"],caption,legend,summary,[role="rowheader"],[role="columnheader"],section[aria-label],article[aria-label],table[aria-label],[role="region"][aria-label],[data-title]')) : [];
+        const headingScores = headingNodes.map(heading => {
+          const label = (heading.innerText || heading.textContent || heading.getAttribute("aria-label") || heading.getAttribute("data-title") || heading.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 100);
+          const folded = label.toLocaleLowerCase().replace(/\s+/g, " ");
+          const labelTerms = folded.match(/[가-힣]{2,}|[a-z0-9]{2,}/g) || [];
+          const score = queryTerms.reduce((sum, term) => sum + (
+            folded.includes(term) || labelTerms.some(labelTerm => labelTerm.includes(term) || term.includes(labelTerm)) ? 1 : 0
+          ), 0);
           return { heading, label, score };
-        }).filter(item => item.label && item.score > 0).sort((a, b) => b.score - a.score).slice(0, 6);
+        }).filter(item => item.label);
+        const matchingHeadings = headingScores.filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+        const fallbackHeadings = headingScores.filter(item => {
+          const rect = item.heading.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
+        });
+        // When wording does not match a page's heading language, send a few
+        // visible semantic headings for the model to compare with the goal.
+        const scoredHeadings = (matchingHeadings.length ? matchingHeadings : fallbackHeadings).slice(0, 6);
         for (const { heading, label } of scoredHeadings) {
           let selected = heading;
           let contentVisible = false;

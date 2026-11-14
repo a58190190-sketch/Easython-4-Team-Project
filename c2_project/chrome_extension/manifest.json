@@ -1,7 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Easython Local Bridge",
+<<<<<<< HEAD
   "version": "0.5.0",
+=======
+  "version": "0.4.12",
+>>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
   "description": "사용자가 요청한 현재 탭의 화면과 UI 상태를 Easython 로컬 Python 앱으로 전달합니다.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["http://127.0.0.1/*"],
