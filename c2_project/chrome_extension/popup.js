@@ -1,18 +1,115 @@
 const msg = document.getElementById("msg");
 const button = document.getElementById("send");
+const goalInput = document.getElementById("goal");
+const opacity = document.getElementById("opacity");
+const opacityValue = document.getElementById("opacityValue");
+const BRIDGE_ORIGIN = "http://127.0.0.1/*";
+let bridgeGranted = false;
+let opacityTimer = null;
+
+goalInput.value = localStorage.getItem("easython-goal") || "";
+goalInput.addEventListener("input", () => localStorage.setItem("easython-goal", goalInput.value));
+goalInput.addEventListener("keydown", event => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    button.click();
+  }
+});
+
+async function ensureBridgePermission() {
+  if (!bridgeGranted) {
+    bridgeGranted = await chrome.permissions.request({ origins: [BRIDGE_ORIGIN] });
+  }
+  return bridgeGranted;
+}
+
+async function loadGuideSettings() {
+  try {
+    bridgeGranted = await chrome.permissions.contains({ origins: [BRIDGE_ORIGIN] });
+    if (!bridgeGranted) {
+      msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
+      return;
+    }
+    fetch("http://127.0.0.1:8765/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    opacity.value = String(data.transparency ?? 10);
+    opacityValue.value = opacity.value + "%";
+    msg.textContent = "현재 탭에서 동작하며, 새 페이지에는 자동으로 접근하지 않습니다.";
+  } catch (_) {
+    msg.textContent = "Python 앱을 먼저 실행하세요.";
+  }
+}
+
+opacity.addEventListener("input", async () => {
+  opacityValue.value = opacity.value + "%";
+  if (!await ensureBridgePermission()) {
+    msg.textContent = "투명도를 적용하려면 로컬 앱 연결 권한이 필요합니다.";
+    return;
+  }
+  clearTimeout(opacityTimer);
+  opacityTimer = setTimeout(async () => {
+    try {
+      const response = await fetch("http://127.0.0.1:8765/guide/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transparency: Number(opacity.value) })
+      });
+      if (!response.ok) throw new Error();
+      msg.textContent = "가이드 투명도 " + opacity.value + "% 적용됨";
+    } catch (_) {
+      msg.textContent = "Python 앱을 실행한 뒤 다시 조절하세요.";
+    }
+  }, 60);
+});
 
 button.addEventListener("click", async () => {
+  const goal = goalInput.value.trim();
+  if (!goal) {
+    msg.textContent = "먼저 수행하려는 기능을 입력하세요.";
+    goalInput.focus();
+    return;
+  }
   button.disabled = true;
-  msg.textContent = "현재 화면과 UI 요소를 분석 중…";
+  msg.textContent = "현재 화면과 입력한 기능을 앱으로 전송 중…";
   try {
+    if (!await ensureBridgePermission()) {
+      throw new Error("Easython 로컬 앱 연결 권한이 필요합니다.");
+    }
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id || !/^https?:/.test(tab.url || "")) {
       throw new Error("일반 http/https 웹페이지에서 실행해 주세요.");
     }
+    const policyResponse = await fetch("http://127.0.0.1:8765/capture-policy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: tab.url, goal })
+    });
+    if (!policyResponse.ok) throw new Error("수집 범위를 확인하지 못했습니다. Python 앱 연결을 확인하세요.");
+    const capturePolicy = await policyResponse.json();
+    msg.textContent = capturePolicy.need_full_html
+      ? "첫 분석이므로 HTML을 확인하고 화면을 OpenCV로 분석 중…"
+      : capturePolicy.need_screenshot
+        ? "현재 화면 UI와 시각 분석 정보를 수집 중…"
+        : "현재 화면의 UI 요소만 확인 중…";
 
+    // activeTab is granted for this page after the user opens this extension popup.
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
     const [{ result: page }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: async () => {
+      args: [capturePolicy],
+      func: async (policy) => {
+        const hitTargetsElement = (element, rect) => {
+          const insetX = Math.min(6, rect.width / 4);
+          const insetY = Math.min(6, rect.height / 4);
+          const xs = [rect.left + insetX, rect.left + rect.width / 2, rect.right - insetX];
+          const ys = [rect.top + insetY, rect.top + rect.height / 2, rect.bottom - insetY];
+          return xs.some(x => ys.some(y =>
+            x >= 0 && y >= 0 && x < innerWidth && y < innerHeight &&
+            document.elementsFromPoint(x, y).some(hit => hit === element || element.contains(hit) || hit.contains(element))
+          ));
+        };
         const popularKeywordElements = new Set();
         const popularHeadings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,strong,b,label,span,p,div"))
           .filter(el => el.children.length === 0 && el.innerText && el.innerText.trim().length <= 30 && /인기\s*(검색어|키워드)|popular\s*(search|keyword)/i.test(el.innerText.trim()));
@@ -28,15 +125,57 @@ button.addEventListener("click", async () => {
           }
         }
         const baseCandidates = Array.from(document.querySelectorAll(
-          'button,a,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="searchbox"]'
+          'button,a,input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]'
         ));
-        const candidates = Array.from(new Set([...baseCandidates, ...popularKeywordElements]));
+        // Many sites implement clicks on plain DIV/SPAN elements (often via a
+        // delegated framework handler), so include visible pointer-cursor roots.
+        const pointerCandidates = [];
+        const pageNodes = document.querySelectorAll("body *");
+        let inspected = 0;
+        for (const el of pageNodes) {
+          if (++inspected > 3000 || pointerCandidates.length >= 100) break;
+          if (el.matches('button,a,input,select,textarea,[role],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]')) continue;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 8 || rect.height < 8 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) continue;
+          if (getComputedStyle(el).cursor !== "pointer") continue;
+          let pointerAncestor = false;
+          for (let parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+            if (parent.matches('button,a,[role],[onclick],[oncontextmenu]')) { pointerAncestor = true; break; }
+            if (getComputedStyle(parent).cursor === "pointer") { pointerAncestor = true; break; }
+          }
+          if (!pointerAncestor) pointerCandidates.push(el);
+        }
+        const candidates = Array.from(new Set([
+          ...(policy.include_popular_keywords ? popularKeywordElements : []),
+          ...pointerCandidates,
+          ...baseCandidates
+        ])).filter(el => policy.include_popular_keywords || !popularKeywordElements.has(el));
         const elements = [];
+        const hoverProbeCandidates = [];
+        const interactiveSelector = 'button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[onclick]';
         for (const el of candidates) {
           const style = getComputedStyle(el);
           if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
           const rect = el.getBoundingClientRect();
           if (rect.width < 2 || rect.height < 2) continue;
+          const disabled = Boolean(el.matches(":disabled") || el.closest('[aria-disabled="true"]'));
+          const inView = rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
+          const pointerReachable = inView && hitTargetsElement(el, rect);
+          const semanticAction = el.matches('button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"]') || el.hasAttribute("oncontextmenu");
+          const likelyCustomClick = style.cursor === "pointer";
+          const clickReachable = inView && !disabled && style.pointerEvents !== "none" && (semanticAction || likelyCustomClick || typeof el.onclick === "function" || el.hasAttribute("onclick")) &&
+            pointerReachable;
+          const hoverHandlerHints = ["onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
+            el.hasAttribute(name) || typeof el[name] === "function"
+          );
+          if (pointerReachable && !clickReachable && hoverProbeCandidates.length < 30) hoverProbeCandidates.push(el);
+          const actionType = el.matches('input[type="search"],[role="searchbox"]') ? "search_input"
+            : el.matches('input[type="text"],input:not([type]),textarea') ? "text_input"
+            : el.matches('input[type="checkbox"],input[type="radio"]') ? "toggle"
+            : el.matches("select") ? "select"
+            : el.matches("a,[role=\"link\"]") ? "link"
+            : el.matches("button,[role=\"button\"]") ? "button"
+            : el.matches('[role="menuitem"],[role="tab"],[role="option"]') ? "menu_item" : "control";
           const id = `e${elements.length}`;
           el.setAttribute("data-easython-id", id);
           const label = (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || el.tagName).replace(/\s+/g, " ").trim().slice(0, 100);
@@ -55,13 +194,65 @@ button.addEventListener("click", async () => {
             type: el.getAttribute("type") || "",
             is_search: (el.matches('input,[role="searchbox"],textarea') && /search|검색/i.test([el.type, el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.closest("form")?.getAttribute("role")].filter(Boolean).join(" "))),
             popular_keyword: popularKeywordElements.has(el),
+            actionable: clickReachable,
+            click_detection: semanticAction ? "semantic" : likelyCustomClick ? "pointer_cursor_heuristic" : "event_attribute",
+            hover_handler_hints: hoverHandlerHints,
+            hover_reveals: [],
+            hover_actionable: false,
+            disabled,
+            action_type: actionType,
+            context_menu_hint: el.hasAttribute("oncontextmenu"),
+            options: el instanceof HTMLSelectElement ? Array.from(el.options).map(option => option.textContent.trim()).filter(Boolean).slice(0, 30) : [],
             x: Math.round(rect.left),
             y: Math.round(rect.top),
             width: Math.round(rect.width),
             height: Math.round(rect.height),
-            in_view: rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight
+            in_view: inView
           });
           if (elements.length >= 250) break;
+        }
+        const describeVisibleInteractions = () => Array.from(document.querySelectorAll(interactiveSelector))
+          .filter(el => {
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 ||
+              rect.width < 2 || rect.height < 2 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return false;
+            const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
+            const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
+            return document.elementsFromPoint(x, y).some(hit => hit === el || el.contains(hit) || hit.contains(el));
+          })
+          .map(el => ({
+            node: el,
+            label: (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || el.tagName).replace(/\s+/g, " ").trim().slice(0, 100),
+            signature: `${el.tagName}:${el.id}:${el.getAttribute("role") || ""}:${el.getAttribute("aria-label") || ""}:${el.innerText || ""}`.slice(0, 240)
+          }));
+        for (const el of hoverProbeCandidates) {
+          const beforeHover = new Set(describeVisibleInteractions().map(item => item.signature));
+          const rect = el.getBoundingClientRect();
+          const x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
+          const y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
+          const hoverEvents = ["pointerover", "pointerenter", "mouseover", "mouseenter"];
+          for (const type of hoverEvents) {
+            const EventClass = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+            el.dispatchEvent(new EventClass(type, { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse" }));
+          }
+          await new Promise(resolve => setTimeout(resolve, 90));
+          const revealed = describeVisibleInteractions()
+            .filter(item => !beforeHover.has(item.signature) && item.node !== el && !item.node.matches(":disabled") && !item.node.closest('[aria-disabled="true"]'))
+            .map(item => item.label).filter(Boolean).slice(0, 8);
+          const ownHandlers = ["onmouseover", "onmouseenter", "onpointerover", "onpointerenter"].filter(name =>
+            el.hasAttribute(name) || typeof el[name] === "function"
+          );
+          const index = elements.findIndex(item => item.element === el);
+          if (index >= 0) {
+            elements[index].hover_events = hoverEvents.filter((_, eventIndex) => eventIndex % 2 === 0);
+            elements[index].hover_handler_hints = Array.from(new Set([...elements[index].hover_handler_hints, ...ownHandlers]));
+            elements[index].hover_reveals = revealed;
+            elements[index].hover_actionable = revealed.length > 0;
+          }
+          el.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse" }));
+          el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, composed: true, clientX: x, clientY: y }));
+          await new Promise(resolve => setTimeout(resolve, 40));
         }
         const samples = elements.map(item => ({
           element: item.element,
@@ -88,16 +279,59 @@ button.addEventListener("click", async () => {
             width: rect ? Math.round(rect.width) : item.width,
             height: rect ? Math.round(rect.height) : item.height,
             in_view: Boolean(rect && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight),
-            stable
+            stable,
+            actionable: Boolean(rect && sample.element.isConnected && !sample.element.matches(":disabled") &&
+              !sample.element.closest('[aria-disabled="true"]') && getComputedStyle(sample.element).pointerEvents !== "none" &&
+              (sample.element.matches('button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]') || getComputedStyle(sample.element).cursor === "pointer") &&
+              rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight &&
+              hitTargetsElement(sample.element, rect)),
+            hover_actionable: Boolean(item.hover_actionable && rect && sample.element.isConnected &&
+              rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight),
+            disabled: Boolean(sample.element.matches(":disabled") || sample.element.closest('[aria-disabled="true"]'))
           };
         });
+        const infoRegions = [];
+        const contributorHeadings = Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
+          .filter(el => /contributors?|기여자/i.test((el.innerText || "").replace(/\s+/g, " ").trim()));
+        for (const heading of contributorHeadings.slice(0, 3)) {
+          let selected = heading;
+          let contentVisible = false;
+          for (let parent = heading.parentElement, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) {
+            const rect = parent.getBoundingClientRect();
+            const text = (parent.innerText || "").replace(/\s+/g, " ").trim();
+            const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+            if (rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+                rect.left < innerWidth && rect.top < innerHeight && area < innerWidth * innerHeight * 0.6 && text.length <= 700) {
+              selected = parent;
+              const visibleLinks = Array.from(parent.querySelectorAll('a[href]')).filter(link => {
+                const linkRect = link.getBoundingClientRect();
+                return linkRect.width > 0 && linkRect.height > 0 && linkRect.bottom > 0 && linkRect.right > 0 && linkRect.top < innerHeight && linkRect.left < innerWidth;
+              });
+              if (visibleLinks.length > 0) { contentVisible = true; break; }
+            }
+          }
+          const rect = selected.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) continue;
+          const id = `info${infoRegions.length}`;
+          selected.setAttribute("data-easython-info-id", id);
+          infoRegions.push({
+            id, tag: selected.tagName.toLowerCase(), label: "Contributors", role: "information_region",
+            info_region: true, info_content_visible: contentVisible, actionable: false, hover_actionable: false,
+            disabled: false, stable: true, in_view: true, click_detection: "informational_section",
+            action_type: "information_region", x: Math.round(rect.left), y: Math.round(rect.top),
+            width: Math.round(rect.width), height: Math.round(rect.height)
+          });
+        }
         const root = document.documentElement;
         return {
           url: location.href,
-          title: document.title,
-          html: root.outerHTML,
-          elements: stabilized,
-          popular_keywords: stabilized.filter(item => item.popular_keyword).map(item => item.label).filter(Boolean),
+          ...(policy.include_title ? { title: document.title } : {}),
+          ...(policy.need_full_html ? { html: root.outerHTML } : {}),
+          elements: [...stabilized, ...infoRegions],
+          ...(policy.include_popular_keywords ? { has_popular_keywords: popularKeywordElements.size > 0 } : {}),
+          ...(policy.include_popular_keywords ? {
+            popular_keywords: stabilized.filter(item => item.popular_keyword).map(item => item.label).filter(Boolean)
+          } : {}),
           viewport: {
             width: innerWidth,
             height: innerHeight,
@@ -111,16 +345,23 @@ button.addEventListener("click", async () => {
       }
     });
 
-    // activeTab permission is granted by this explicit toolbar click.
-    const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 65 });
-    const capture = { ...page, screenshot };
+    const screenshot = capturePolicy.need_screenshot
+      ? await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 65 })
+      : undefined;
+    const capture = { ...page, ...(screenshot ? { screenshot } : {}), goal };
     const response = await fetch("http://127.0.0.1:8765/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(capture)
     });
     if (!response.ok) throw new Error(`Python 앱 응답 오류 (${response.status})`);
-    msg.textContent = "화면 분석 완료. Easython 메인 창에서 안내를 확인하세요.";
+    chrome.runtime.sendMessage({
+      type: "EASYTHON_SESSION_START",
+      tabId: tab.id,
+      url: tab.url,
+      goal
+    }).catch(() => {});
+    msg.textContent = "전송 완료. Easython 앱에서 분석하고 웹페이지에 가이드를 표시합니다.";
   } catch (error) {
     msg.textContent = error.message || "페이지 전송에 실패했습니다.";
   } finally {
@@ -128,8 +369,4 @@ button.addEventListener("click", async () => {
   }
 });
 
-fetch("http://127.0.0.1:8765/heartbeat", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: "{}"
-}).catch(() => {});
+loadGuideSettings();
