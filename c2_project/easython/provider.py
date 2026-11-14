@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from .config import *
+from .guidance import is_visual_info_request
 from .html_inventory import inventory
 from .schema import RESPONSE_FORMAT_INSTRUCTION
 

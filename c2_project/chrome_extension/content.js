@@ -181,6 +181,9 @@
         aria_label: element.getAttribute("aria-label") || "", title: element.getAttribute("title") || "",
         placeholder: element.getAttribute("placeholder") || "", name: element.getAttribute("name") || "",
         href: element instanceof HTMLAnchorElement ? (element.host !== location.host ? element.host + element.pathname : element.pathname) : "",
+        // Same flag popup.js sends on the first capture; the prompt uses it for
+        // links to another site (e.g. portal → library).
+        external_link: element instanceof HTMLAnchorElement && /^https?:$/.test(element.protocol) && element.origin !== location.origin,
         type: element.getAttribute("type") || "", action_type: actionTypeOf(element),
         is_search: element.matches('input,[role="searchbox"],textarea') && /search|검색/i.test(searchText),
         click_detection: semantic ? "semantic" : "pointer_cursor_heuristic",

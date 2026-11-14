@@ -137,6 +137,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(200, {"ok": True, "unchanged": True})
                     return
                 viewport = data.get("viewport") if isinstance(data.get("viewport"), dict) else {}
+                # The screen and guide shown before this capture: the guide is the
+                # action the user just performed.
+                old_page = state.get("capture") or {}
+                guide = state.get("guide") or {}
                 completed_actions = [
                     item for item in (old_page.get("completed_guided_actions") or [])
                     if isinstance(item, dict)
@@ -222,9 +226,10 @@ class Handler(BaseHTTPRequestHandler):
                 old_page = state.get("capture") or {}
                 old_guide = state.get("guide") or {}
                 old_display = state.get("display") or {}
-                old_goal = str(old_guide.get("goal") or old_display.get("goal") or "").strip()
+                # guide["goal"] is cut at 160 chars; the session keeps the full goal.
+                old_goal = (current_goal() or str(old_guide.get("goal") or old_display.get("goal") or "")).strip()
                 continue_external_session = bool(
-                    state.get("navigation_session") and old_goal and old_goal == goal
+                    is_session_active() and old_goal and old_goal == goal
                     and urlsplit(str(old_page.get("url", ""))).netloc.lower() != urlsplit(data["url"]).netloc.lower()
                 )
                 completed_actions = [
