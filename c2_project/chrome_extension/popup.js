@@ -27,7 +27,6 @@ goalInput.addEventListener("keydown", event => {
   }
 });
 
-<<<<<<< HEAD
 async function loadGuideSettings() {
   try {
     siteAccessGranted = await chrome.permissions.contains(SITE_ACCESS);
@@ -37,53 +36,14 @@ async function loadGuideSettings() {
   try {
     bridgeFetch("/heartbeat", { method: "POST", body: "{}" }).catch(() => {});
     const response = await bridgeFetch("/guide");
-=======
-async function ensureBridgePermission() {
-  if (!bridgeGranted) {
-    bridgeGranted = await chrome.permissions.request({ origins: [BRIDGE_ORIGIN] });
-  }
-  return bridgeGranted;
-}
-
-async function showPendingExternalNavigation() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab?.id || !tab.url) return false;
-    const key = "easython-session-" + tab.id;
-    const stored = await chrome.storage.session.get(key);
-    const session = stored[key];
-    if (!session?.pending_url || new URL(tab.url).origin === new URL(session.origin).origin) return false;
-    if (!goalInput.value && session.goal) goalInput.value = session.goal;
-    msg.textContent = "외부 웹사이트로 이동했습니다. Chrome 권한은 사이트 이동 후 유지되지 않으므로, 현재 탭 분석을 눌러 같은 목표로 이어서 안내받으세요.";
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-async function loadGuideSettings() {
-  try {
-    const pendingExternalNavigation = await showPendingExternalNavigation();
-    bridgeGranted = await chrome.permissions.contains({ origins: [BRIDGE_ORIGIN] });
-    if (!bridgeGranted) {
-      if (!pendingExternalNavigation) msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
-      return;
-    }
-    fetch("http://127.0.0.1:8765/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
-    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
->>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
     if (!response.ok) return;
     const data = await response.json();
     renderAnalysisStatus(data.analysis);
     opacity.value = String(data.transparency ?? 10);
     opacityValue.value = opacity.value + "%";
-<<<<<<< HEAD
     msg.textContent = siteAccessGranted
       ? "목표를 달성할 때까지 다음 페이지와 새 탭에서도 안내를 이어갑니다."
       : "버튼을 누르면 페이지를 옮겨도 안내를 이어갈 수 있도록 사이트 접근 권한을 한 번 요청합니다.";
-=======
-    if (!pendingExternalNavigation) msg.textContent = "현재 탭에서 동작합니다. 다른 사이트로 이동하면 확장을 다시 눌러 이어서 분석하세요.";
->>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
   } catch (_) {
     msg.textContent = "Python 앱을 먼저 실행하세요.";
   }

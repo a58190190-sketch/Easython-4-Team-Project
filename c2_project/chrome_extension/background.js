@@ -124,30 +124,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete" || !/^https?:/.test(tab.url || "")) return;
   (async () => {
-<<<<<<< HEAD
     const session = await getSession();
     if (!session || session.tabId !== tabId) return;
     await injectGuide(tabId);
     await setSession({ ...session, url: tab.url });
-=======
-    const key = "easython-session-" + tabId;
-    const stored = await chrome.storage.session.get(key);
-    const session = stored[key];
-    if (!session) return;
-    if (originOf(tab.url) !== session.origin) {
-      // activeTab does not carry page access across origins. Keep the goal and
-      // record the destination so the popup can resume after the user invokes it.
-      await chrome.storage.session.set({ [key]: { ...session, pending_url: tab.url } });
-      return;
-    }
-    if (tab.url === session.url) return;
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-      await chrome.storage.session.set({ [key]: { ...session, url: tab.url } });
-    } catch (_) {
-      // Chrome can revoke activeTab access after a cross-origin navigation.
-    }
->>>>>>> c7594d96a3fb72e7cbcfb0cf038dee7668c3606d
   })();
 });
 
