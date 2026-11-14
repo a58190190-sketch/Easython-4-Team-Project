@@ -339,9 +339,12 @@ def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
             nim_rate_events.popleft()
         candidate = max(now, nim_next_allowed, now + page_delay)
         while True:
-            active = [(when, count) for when, count in nim_rate_events if when >= candidate - 60]
+            # A reservation expires once its 60-second window ends. Using
+            # `>= candidate - 60` while advancing candidate to `when + 60`
+            # retained the boundary event and could trap this loop forever.
+            active = [(when, count) for when, count in nim_rate_events if when + 60.0 > candidate]
             if len(active) >= NIM_REQUESTS_PER_MINUTE:
-                candidate = max(candidate, active[0][0] + 60)
+                candidate = max(candidate, active[0][0] + 60.001)
                 continue
             used_tokens = sum(count for _, count in active)
             if used_tokens + estimated_tokens > NIM_ESTIMATED_TOKENS_PER_MINUTE:
@@ -349,7 +352,7 @@ def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
                 released = 0
                 for when, count in active:
                     released += count
-                    candidate = max(candidate, when + 60)
+                    candidate = max(candidate, when + 60.001)
                     if released >= excess:
                         break
                 continue
