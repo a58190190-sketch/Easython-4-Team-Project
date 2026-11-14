@@ -30,7 +30,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     const session = stored[key];
     if (!session) return;
     if (originOf(tab.url) !== session.origin) {
-      await chrome.storage.session.remove(key);
+      // activeTab does not carry page access across origins. Keep the goal and
+      // record the destination so the popup can resume after the user invokes it.
+      await chrome.storage.session.set({ [key]: { ...session, pending_url: tab.url } });
       return;
     }
     if (tab.url === session.url) return;

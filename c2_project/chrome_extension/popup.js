@@ -26,11 +26,28 @@ async function ensureBridgePermission() {
   return bridgeGranted;
 }
 
+async function showPendingExternalNavigation() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !tab.url) return false;
+    const key = "easython-session-" + tab.id;
+    const stored = await chrome.storage.session.get(key);
+    const session = stored[key];
+    if (!session?.pending_url || new URL(tab.url).origin === new URL(session.origin).origin) return false;
+    if (!goalInput.value && session.goal) goalInput.value = session.goal;
+    msg.textContent = "외부 웹사이트로 이동했습니다. Chrome 권한은 사이트 이동 후 유지되지 않으므로, 현재 탭 분석을 눌러 같은 목표로 이어서 안내받으세요.";
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function loadGuideSettings() {
   try {
+    const pendingExternalNavigation = await showPendingExternalNavigation();
     bridgeGranted = await chrome.permissions.contains({ origins: [BRIDGE_ORIGIN] });
     if (!bridgeGranted) {
-      msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
+      if (!pendingExternalNavigation) msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
       return;
     }
     fetch("http://127.0.0.1:8765/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
@@ -40,7 +57,7 @@ async function loadGuideSettings() {
     renderAnalysisStatus(data.analysis);
     opacity.value = String(data.transparency ?? 10);
     opacityValue.value = opacity.value + "%";
-    msg.textContent = "현재 탭에서 동작하며, 새 페이지에는 자동으로 접근하지 않습니다.";
+    if (!pendingExternalNavigation) msg.textContent = "현재 탭에서 동작합니다. 다른 사이트로 이동하면 확장을 다시 눌러 이어서 분석하세요.";
   } catch (_) {
     msg.textContent = "Python 앱을 먼저 실행하세요.";
   }
@@ -229,6 +246,7 @@ button.addEventListener("click", async () => {
             placeholder: el.getAttribute("placeholder") || "",
             name: el.getAttribute("name") || "",
             href: el instanceof HTMLAnchorElement ? el.pathname : "",
+            external_link: el instanceof HTMLAnchorElement && /^https?:$/.test(el.protocol) && el.origin !== location.origin,
             type: el.getAttribute("type") || "",
             is_search: (el.matches('input,[role="searchbox"],textarea') && /search|검색/i.test([el.type, el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.closest("form")?.getAttribute("role")].filter(Boolean).join(" "))),
             popular_keyword: popularKeywordElements.has(el),

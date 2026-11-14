@@ -153,6 +153,8 @@ def action_text_for_target(
 ) -> str:
     action_type = str(target.get("action_type", ""))
     if target.get("info_region") or target.get("hover_actionable") or target.get("context_menu_hint") or target.get("double_click_hint") or search_query or action_type:
+        if target.get("external_link") and action_type == "link":
+            return "좌클릭 1회 → 외부 사이트 이동 후 확장 다시 실행"
         return interaction_instruction(target, elements, answer, goal, search_query)
     if target.get("repository_entry"):
         return "좌클릭 1회"
@@ -212,6 +214,23 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             route = str(state.get("planned_route", ""))
             route_position = str(state.get("route_position", "")) or str(page.get("title", "현재 화면"))
         accessibility_check = bool(state.get("accessibility_check", False))
+    previous_action = page.get("previous_guided_action") if isinstance(page.get("previous_guided_action"), dict) else {}
+    previous_label = re.sub(r"\s+", " ", str(previous_action.get("label", ""))).strip().casefold()
+    completed_actions = [item for item in page.get("completed_guided_actions", []) if isinstance(item, dict)]
+    if not completed_actions and previous_action:
+        completed_actions = [previous_action]
+    has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
+    search_intent = bool(re.search(r"검색|찾|조회|출력|발급|신청", goal))
+    goal_search_query = search_query_from_goal(goal) if not visual_info_request else ""
+    has_completed_search = any(action.get("is_search") for action in completed_actions)
+    requested_search_query = goal_search_query if (has_popular_keywords or search_intent or has_completed_search) else ""
+    normalized_query = re.sub(r"\s+", " ", requested_search_query).strip().casefold()
+    search_already_submitted = bool(normalized_query) and any(
+        action.get("is_search")
+        and re.sub(r"\s+", " ", str(action.get("search_query", ""))).strip().casefold() == normalized_query
+        for action in completed_actions
+    )
+    search_query = "" if search_already_submitted else requested_search_query
     has_visible_actionable_ui = any(
         bool(element.get("in_view")) and (bool(element.get("actionable")) or bool(element.get("hover_actionable")))
         for element in page.get("elements", [])
@@ -223,6 +242,10 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
     matches = []
     for element in page.get("elements", []):
         label = re.sub(r"\s+", " ", str(element.get("label", ""))).strip()
+        if previous_label and label.casefold() == previous_label:
+            continue
+        if search_already_submitted and element.get("is_search"):
+            continue
         can_guide = bool(element.get("actionable") or element.get("hover_actionable"))
         if len(label) >= 2 and label.casefold() in match_folded and element.get("in_view") and (can_guide or not accessibility_check or element.get("info_region")):
             # Stable targets rank first, but a moving clickable control remains
@@ -257,6 +280,24 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
         ]
     matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     target = matches[0][3] if matches else None
+    if search_already_submitted and target is None:
+        query_terms = [
+            term.casefold() for term in re.findall(r"[가-힣]{2,}|[a-z0-9]{2,}", requested_search_query, re.IGNORECASE)
+            if term.casefold() not in {"검색", "찾기", "조회", "해주세요", "해줘", "search", "find"}
+        ]
+        result_candidates = []
+        for index, element in enumerate(page.get("elements", [])):
+            label = re.sub(r"\s+", " ", str(element.get("label", ""))).strip()
+            if (not label or not element.get("in_view") or not element.get("actionable")
+                    or element.get("is_search") or label.casefold() == previous_label):
+                continue
+            folded_label = label.casefold()
+            relevance = sum(1 for term in query_terms if term in folded_label)
+            if relevance:
+                result_candidates.append((relevance, bool(element.get("stable")), -index, element))
+        if result_candidates:
+            result_candidates.sort(key=lambda item: item[:3], reverse=True)
+            target = result_candidates[0][3]
     if repository_navigation_requested(goal) and target is None:
         repository_links = [
             (index, element) for index, element in enumerate(page.get("elements", []))
@@ -278,10 +319,7 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             with state_lock:
                 state["planned_route"] = route
                 state["route_position"] = route_position
-    has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
-    search_intent = bool(re.search(r"검색|찾|조회|출력|발급|신청", goal))
-    search_query = search_query_from_goal(goal) if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) else ""
-    if (has_popular_keywords or search_intent) and not is_visual_info_request(goal):
+    if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) and not search_already_submitted:
         search_fields = [element for element in page.get("elements", []) if element.get("is_search") and element.get("in_view") and (element.get("actionable") or not accessibility_check)]
         search_fields.sort(key=lambda element: (bool(element.get("stable")), bool(element.get("actionable")), len(str(element.get("label", "")))), reverse=True)
         action_names_search = any(str(element.get("label", "")).casefold() in match_folded for element in search_fields)
@@ -337,6 +375,12 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             "placeholder": str(target.get("placeholder", ""))[:100],
             "name": str(target.get("name", ""))[:100],
             "href": str(target.get("href", ""))[:300],
+            "external_link": bool(target.get("external_link", False)),
+            "action_type": str(target.get("action_type", ""))[:30],
+            "is_search": bool(target.get("is_search")),
+            "search_query": search_query if target.get("is_search") else "",
+            "events": target.get("events", [])[:10] if isinstance(target.get("events"), list) else [],
+            "double_click_hint": bool(target.get("double_click_hint")),
             "x": target.get("x", 0),
             "y": target.get("y", 0),
             "goal": goal[:160],
