@@ -329,7 +329,7 @@ def main() -> None:
 
         def work() -> None:
             try:
-                answer = visible_contributor_answer(page_snapshot, goal)
+                answer = visible_information_answer(page_snapshot, goal)
                 if answer is None:
                     answer = call_nim(
                         page_snapshot, goal, conversation, selected_model, provider=selected_provider,

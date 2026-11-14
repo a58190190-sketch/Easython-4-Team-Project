@@ -133,8 +133,8 @@ button.addEventListener("click", async () => {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
     const [{ result: page }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      args: [capturePolicy],
-      func: async (policy) => {
+      args: [capturePolicy, goal],
+      func: async (policy, requestedGoal) => {
         const hitTargetsElement = (element, rect) => {
           const insetX = Math.min(6, rect.width / 4);
           const insetY = Math.min(6, rect.height / 4);
@@ -326,31 +326,44 @@ button.addEventListener("click", async () => {
           };
         });
         const infoRegions = [];
-        const contributorHeadings = Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
-          .filter(el => /contributors?|기여자/i.test((el.innerText || "").replace(/\s+/g, " ").trim()));
-        for (const heading of contributorHeadings.slice(0, 3)) {
+        const infoIntent = /확인|보기|보여|표시|열람|읽어|목록|정보|기여자|contributors?|show|display|view|read|list/i.test(requestedGoal || "");
+        const stopTerms = new Set(["현재", "화면", "사이트", "웹사이트", "정보", "내용", "목록", "전체", "모두", "확인", "보기", "표시", "읽어", "보고", "싶어요", "싶어", "해주세요", "해줘", "있는", "에서", "으로", "항목"]);
+        const requestedTerms = (requestedGoal || "").toLocaleLowerCase().match(/[가-힣]{2,}|[a-z0-9]{2,}/g) || [];
+        const queryTerms = requestedTerms.filter(term => !stopTerms.has(term));
+        const headingNodes = infoIntent ? Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"],caption,legend,summary,[role="rowheader"],[role="columnheader"]')) : [];
+        const scoredHeadings = headingNodes.map(heading => {
+          const label = (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
+          const folded = label.toLocaleLowerCase();
+          let score = queryTerms.reduce((sum, term) => sum + (folded.includes(term) ? 1 : 0), 0);
+          const headingAliases = [
+            [/기여자/i, /contributors?/i], [/레포지토리|저장소/i, /repository|repo/i],
+            [/릴리스|출시/i, /release|changelog/i], [/공지|소식/i, /announcement|news/i],
+            [/문서|가이드/i, /documentation|docs|guide/i], [/회원|멤버|구성원/i, /members?/i],
+            [/이슈/i, /issues?/i], [/커밋/i, /commits?/i], [/활동/i, /activity|contributions?/i]
+          ];
+          for (const [goalPattern, headingPattern] of headingAliases) {
+            if (goalPattern.test(requestedGoal || "") && headingPattern.test(label)) score += 2;
+          }
+          return { heading, label, score };
+        }).filter(item => item.label && item.score > 0).sort((a, b) => b.score - a.score).slice(0, 6);
+        for (const { heading, label } of scoredHeadings) {
           let selected = heading;
           let contentVisible = false;
           for (let parent = heading.parentElement, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) {
             const rect = parent.getBoundingClientRect();
             const text = (parent.innerText || "").replace(/\s+/g, " ").trim();
             const area = Math.max(0, rect.width) * Math.max(0, rect.height);
-            if (rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
-                rect.left < innerWidth && rect.top < innerHeight && area < innerWidth * innerHeight * 0.6 && text.length <= 700) {
-              selected = parent;
-              const visibleLinks = Array.from(parent.querySelectorAll('a[href]')).filter(link => {
-                const linkRect = link.getBoundingClientRect();
-                return linkRect.width > 0 && linkRect.height > 0 && linkRect.bottom > 0 && linkRect.right > 0 && linkRect.top < innerHeight && linkRect.left < innerWidth;
-              });
-              if (visibleLinks.length > 0) { contentVisible = true; break; }
-            }
+            if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight || area >= innerWidth * innerHeight * 0.6 || text.length > 700) continue;
+            selected = parent;
+            const remainingText = text.replace(label, "").trim();
+            if (remainingText.length > 0) { contentVisible = true; break; }
           }
           const rect = selected.getBoundingClientRect();
           if (rect.width < 2 || rect.height < 2 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) continue;
           const id = `info${infoRegions.length}`;
           selected.setAttribute("data-easython-info-id", id);
           infoRegions.push({
-            id, tag: selected.tagName.toLowerCase(), label: "Contributors", role: "information_region",
+            id, tag: selected.tagName.toLowerCase(), label, role: "information_region",
             info_region: true, info_content_visible: contentVisible, actionable: false, hover_actionable: false,
             disabled: false, stable: true, in_view: true, click_detection: "informational_section",
             action_type: "information_region", x: Math.round(rect.left), y: Math.round(rect.top),

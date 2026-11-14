@@ -82,7 +82,8 @@ def action_text_for_target(
 ) -> str:
     action_type = str(target.get("action_type", ""))
     if target.get("info_region"):
-        return "현재 화면의 Contributors 영역에 표시된 기여자 목록을 확인하세요."
+        label = re.sub(r"\s+", " ", str(target.get("label", "정보 영역"))).strip()[:100]
+        return f"현재 화면의 ‘{label}’ 영역에 표시된 요청 정보를 확인하세요."
     if target.get("hover_actionable"):
         revealed = [str(label) for label in target.get("hover_reveals", []) if str(label).strip()]
         revealed_text = f" 팝업에서 ‘{revealed[0]}’ 등 표시된 항목을 확인하세요." if revealed else ""
@@ -263,13 +264,57 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
     query_text = f"목표 검색어: ‘{search_query}’. " if search_query else ""
     return f"{query_text}{access_note}{route_text}화면에서 ‘{guide['label']}’ 위치를 표시했습니다. 수행할 동작: {guide['action_text']}."
 
-def visible_contributor_answer(page: dict[str, Any], goal: str) -> str | None:
-    if not re.search(r"기여자|contributors?", goal, re.IGNORECASE):
+def visible_information_answer(page: dict[str, Any], goal: str) -> str | None:
+    """Return a direct, label-specific instruction for information already visible."""
+    if not is_visual_info_request(goal):
         return None
-    visible_region = next((
+    regions = [
         element for element in page.get("elements", [])
         if element.get("info_region") and element.get("info_content_visible") and element.get("in_view")
-    ), None)
-    if not visible_region:
+    ]
+    if not regions:
         return None
-    return "현재 화면에서 할 동작: ‘Contributors’ 영역에 표시된 기여자 목록을 확인하세요."
+
+    ignored_terms = {
+        "현재", "화면", "사이트", "웹사이트", "정보", "내용", "목록", "전체", "모두",
+        "확인", "보기", "보여줘", "보여", "표시", "읽어", "보고", "싶어", "싶어요",
+        "해주세요", "해줘", "부탁", "관련", "항목", "있는", "에서", "으로", "에게",
+    }
+    terms = [
+        term.casefold() for term in re.findall(r"[가-힣]{2,}|[a-z0-9]{2,}", goal, re.IGNORECASE)
+        if term.casefold() not in ignored_terms
+    ]
+    if not terms:
+        return None
+
+    aliases = (
+        (r"기여자", ("contributor", "기여자")),
+        (r"레포지토리|저장소", ("repository", "repo", "저장소")),
+        (r"릴리스|출시", ("release", "changelog", "릴리스")),
+        (r"공지|소식", ("announcement", "news", "공지")),
+        (r"문서|가이드", ("documentation", "docs", "guide", "문서")),
+        (r"회원|멤버|구성원", ("member", "members", "구성원")),
+        (r"이슈", ("issue", "issues", "이슈")),
+        (r"커밋", ("commit", "commits", "커밋")),
+        (r"활동", ("activity", "contribution", "활동")),
+    )
+
+    def relevance(region: dict[str, Any]) -> tuple[int, bool, int]:
+        label = re.sub(r"\s+", " ", str(region.get("label", ""))).strip()
+        folded_label = label.casefold()
+        score = sum(1 for term in terms if term in folded_label or folded_label in term)
+        for pattern, words in aliases:
+            if re.search(pattern, goal, re.IGNORECASE) and any(word.casefold() in folded_label for word in words):
+                score += 2
+        return score, bool(region.get("stable", False)), len(label)
+
+    visible_region = max(regions, key=relevance)
+    score, _stable, _length = relevance(visible_region)
+    # The extension only sends regions it matched against this goal. If it found
+    # exactly one visible content region, its dynamic heading is an adequate match.
+    if score <= 0 and len(regions) != 1:
+        return None
+    label = re.sub(r"\s+", " ", str(visible_region.get("label", ""))).strip()[:100]
+    if not label:
+        return None
+    return f"현재 화면에서 할 동작: ‘{label}’ 영역에 표시된 요청 정보를 확인하세요."
