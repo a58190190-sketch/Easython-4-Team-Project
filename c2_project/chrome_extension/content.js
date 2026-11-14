@@ -225,7 +225,7 @@
       drawGuide(guide, display, latestData.transparency);
       if (display?.monitoring && Date.now() - lastMonitorRequest > 1800) {
         lastMonitorRequest = Date.now();
-        requestMonitorCapture();
+        requestMonitorCapture("EASYTHON_MONITOR_CAPTURE", Boolean(display.need_html_fallback));
       }
     } catch (_) {
       latestData = null;
@@ -233,7 +233,7 @@
     }
   }
 
-  function requestMonitorCapture(type = "EASYTHON_MONITOR_CAPTURE") {
+  function requestMonitorCapture(type = "EASYTHON_MONITOR_CAPTURE", includeHtml = false) {
     const selectors = 'button,a[href],input,select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="option"],[role="searchbox"],[tabindex],[contenteditable="true"],[onclick],[oncontextmenu]';
     const elements = Array.from(document.querySelectorAll(selectors)).filter(element => {
       const style = getComputedStyle(element);
@@ -261,6 +261,7 @@
       type,
       url: location.href,
       title: document.title,
+      ...(includeHtml ? { html: document.documentElement.outerHTML } : {}),
       viewport: {
         width: innerWidth, height: innerHeight,
         document_width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),

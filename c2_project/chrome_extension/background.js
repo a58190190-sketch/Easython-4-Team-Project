@@ -60,6 +60,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
           title: message.title,
           viewport: message.viewport,
           elements: message.elements,
+          ...(typeof message.html === "string" ? { html: message.html } : {}),
           screenshot
         })
       });

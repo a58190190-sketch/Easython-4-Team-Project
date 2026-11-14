@@ -252,6 +252,7 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
         # The target UI is absent even if unrelated controls are visible.
         "has_visible_actionable_ui": False,
         "monitoring": True,
+        "need_html_fallback": not bool(page.get("html_fallback", False)),
         "goal": goal[:1200],
         "instruction": "화면을 스크롤하거나 메뉴를 열어 필요한 UI를 표시하세요. 화면을 자동 확인하고 있습니다.",
     }
@@ -329,7 +330,7 @@ def visible_contributor_answer(page: dict[str, Any], goal: str) -> str | None:
     return "현재 화면에서 할 동작: ‘Contributors’ 영역에 표시된 기여자 목록을 확인하세요."
 
 
-def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
+def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> tuple[float, float, str]:
     global nim_next_allowed
     if estimated_tokens > NIM_ESTIMATED_TOKENS_PER_MINUTE:
         raise RuntimeError("요청이 내부 분당 토큰 예산을 넘습니다. 사이트를 더 작은 페이지 단위로 분석해 주세요.")
@@ -337,7 +338,13 @@ def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
         now = time.monotonic()
         while nim_rate_events and nim_rate_events[0][0] < now - 60:
             nim_rate_events.popleft()
-        candidate = max(now, nim_next_allowed, now + page_delay)
+        candidate = now
+        wait_reason = "이전 요청 간격 또는 제공자 재시도 대기"
+        if nim_next_allowed > candidate:
+            candidate = nim_next_allowed
+        if now + page_delay > candidate:
+            candidate = now + page_delay
+            wait_reason = "페이지 규모별 대기"
         while True:
             # A reservation expires once its 60-second window ends. Using
             # `>= candidate - 60` while advancing candidate to `when + 60`
@@ -345,6 +352,7 @@ def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
             active = [(when, count) for when, count in nim_rate_events if when + 60.0 > candidate]
             if len(active) >= NIM_REQUESTS_PER_MINUTE:
                 candidate = max(candidate, active[0][0] + 60.001)
+                wait_reason = "분당 요청 횟수 제한"
                 continue
             used_tokens = sum(count for _, count in active)
             if used_tokens + estimated_tokens > NIM_ESTIMATED_TOKENS_PER_MINUTE:
@@ -355,14 +363,24 @@ def reserve_nim_slot(estimated_tokens: int, page_delay: float) -> float:
                     candidate = max(candidate, when + 60.001)
                     if released >= excess:
                         break
+                wait_reason = "분당 추정 토큰 제한"
                 continue
             break
         wait = max(0.0, candidate - now)
         nim_rate_events.append((candidate, estimated_tokens))
-        # Keep a short local spacing, while the rolling request/token budgets
-        # below remain the hard safeguards against bursts and provider limits.
-        nim_next_allowed = candidate + max(1.0, page_delay)
-        return wait
+        # Spread the six allowed requests across the minute to avoid a burst
+        # followed by a full-window wait.
+        nim_next_allowed = candidate + max(60.0 / NIM_REQUESTS_PER_MINUTE, page_delay)
+        return wait, candidate, wait_reason
+
+
+def reconcile_rate_reservation(reservation_at: float, actual_tokens: int) -> None:
+    """Replace a conservative token estimate with provider-reported usage."""
+    with nim_rate_lock:
+        for index, (when, _reserved_tokens) in enumerate(nim_rate_events):
+            if when == reservation_at:
+                nim_rate_events[index] = (when, max(0, actual_tokens))
+                return
 
 
 def update_nim_backoff(seconds: float) -> None:
@@ -409,21 +427,28 @@ def nim_request(
     if estimated_tokens is None:
         estimated_tokens = math.ceil(sum(len(message.get("content", "")) for message in messages) / 1.3) + max_tokens
     for attempt in range(4):
-        wait = reserve_nim_slot(estimated_tokens, page_delay)
+        wait, reservation_at, wait_reason = reserve_nim_slot(estimated_tokens, page_delay)
         if wait > 0 and on_status:
             end = time.monotonic() + wait
             while True:
                 remaining = max(0, math.ceil(end - time.monotonic()))
                 if remaining <= 0:
                     break
-                on_status(f"요청 속도 조절 대기 중 · {remaining}초 · 추정 {estimated_tokens:,} 토큰")
+                on_status(f"요청 속도 조절 대기 중 · {remaining}초 · 사유: {wait_reason} · 추정 {estimated_tokens:,} 토큰")
                 time.sleep(min(1.0, remaining))
         if on_status:
             on_status(f"{provider} 분석 요청 중 · 추정 {estimated_tokens:,} 토큰")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                result = json.loads(response.read().decode("utf-8"))
+                usage = result.get("usage") if isinstance(result, dict) else None
+                actual_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+                if isinstance(actual_tokens, int) and not isinstance(actual_tokens, bool):
+                    reconcile_rate_reservation(reservation_at, actual_tokens)
+                return result
         except urllib.error.HTTPError as exc:
+            # Rejected HTTP requests consume a request slot but not model tokens.
+            reconcile_rate_reservation(reservation_at, 0)
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
             if provider == "Groq" and exc.code == 403 and ("1010" in detail or "browser_signature_banned" in detail):
                 raise RuntimeError(
@@ -717,24 +742,35 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 viewport = data.get("viewport") if isinstance(data.get("viewport"), dict) else {}
                 elements = sanitize_control_metadata(data.get("elements"))
+                raw_html = data.get("html") if isinstance(data.get("html"), str) else ""
                 signature = json.dumps({
                     "scroll": [viewport.get("scroll_x", 0), viewport.get("scroll_y", 0)],
                     "elements": [(item.get("label"), item.get("x"), item.get("y"), item.get("in_view")) for item in elements],
                 }, ensure_ascii=False, separators=(",", ":"))
                 now = time.monotonic()
-                if signature == state.get("monitor_signature") or now - float(state.get("monitor_at", 0.0)) < 10.0:
+                has_html_fallback = bool(raw_html)
+                if not has_html_fallback and (signature == state.get("monitor_signature") or now - float(state.get("monitor_at", 0.0)) < 10.0):
                     self.respond(200, {"ok": True, "checked": True, "analyzing": False})
                     return
                 page = dict(state.get("capture") or {})
                 page.update({"viewport": viewport, "elements": elements})
+                if has_html_fallback:
+                    page["controls"] = inventory(raw_html)
+                    page["html_chars"] = len(raw_html)
+                    page["html_fallback"] = True
                 page["vision"] = analyze_capture(screenshot)
                 page["display_advice"] = page_display_advice(page)
                 page["scroll_hints"] = page_scroll_hints(page)
                 state["capture"] = page
                 state["monitor_signature"] = signature
                 state["monitor_at"] = now
+                if has_html_fallback:
+                    state["display"] = {**display, "need_html_fallback": False}
+                data.pop("html", None)
                 data.pop("screenshot", None)
-                ui_events.put(("capture", (page.copy(), str(display.get("goal", "")))))
+                raw_html = ""
+                current_display = state.get("display") or display
+                ui_events.put(("capture", (page.copy(), str(current_display.get("goal", "")))))
                 self.respond(200, {"ok": True, "checked": True, "analyzing": True})
                 return
             elif self.path == "/capture":
@@ -755,6 +791,7 @@ class Handler(BaseHTTPRequestHandler):
                     "url": data["url"][:2000],
                     "title": str(data.get("title", ""))[:500],
                     "html_chars": len(raw_html),
+                    "html_fallback": bool(raw_html),
                     "controls": inventory(raw_html),
                     "viewport": data.get("viewport") if isinstance(data.get("viewport"), dict) else {},
                     "elements": sanitize_control_metadata(data.get("elements")),
@@ -903,8 +940,18 @@ def prepare_nim_messages(
     history_chars = 240 if screen_only else 400
     messages.extend({"role": message["role"], "content": str(message.get("content", ""))[:history_chars]} for message in history[-history_limit:])
     messages.append({"role": "user", "content": goal[:1200]})
-    char_count = sum(len(message["content"]) for message in messages)
-    estimated_tokens = math.ceil(char_count / 1.2) + 4096
+    # Character/1.2 heavily overestimates mixed Korean/English prompts. Approximate
+    # tokenizer cost separately: ASCII averages about 3 chars/token, while
+    # Korean/non-ASCII text averages closer to 1.5 chars/token. Follow-up
+    # guidance is short, so reserve 1,024 typical completion tokens there. The
+    # actual API output cap stays at 4,096 and provider usage replaces this
+    # estimate after a successful response.
+    prompt_chars = "".join(message["content"] for message in messages)
+    ascii_chars = sum(char.isascii() for char in prompt_chars)
+    non_ascii_chars = len(prompt_chars) - ascii_chars
+    prompt_token_estimate = math.ceil(ascii_chars / 3.0 + non_ascii_chars / 1.5)
+    output_reserve = 1024 if screen_only else 4096
+    estimated_tokens = prompt_token_estimate + output_reserve
     metadata_chars = len(json.dumps(visible_elements, ensure_ascii=False) + json.dumps(controls, ensure_ascii=False))
     html_chars = int(page.get("html_chars", 0) or 0)
     if screen_only:
@@ -1246,7 +1293,7 @@ def main() -> None:
         if not current_page or analysis_busy:
             return
         site_key = page_site_key(current_page.get("url", ""))
-        screen_only = site_key in analyzed_sites
+        screen_only = site_key in analyzed_sites and not bool(current_page.get("html_fallback", False))
         conversation = history.copy()
         conversation.append({"role": "user", "content": goal})
         history.append({"role": "user", "content": goal})
