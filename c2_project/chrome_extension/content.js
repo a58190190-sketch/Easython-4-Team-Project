@@ -9,6 +9,8 @@
   let lastMonitorRequest = 0;
   let lastNavigationRequestKey = "";
   let lastSessionState = null;
+  let monitorPlanKey = "";
+  let monitorPlan = null;
 
   function clearOverlay() {
     document.getElementById(ROOT_ID)?.remove();
@@ -89,18 +91,56 @@
     const hints = [];
     const hasVisibleActionableUI = Boolean(guide?.has_visible_actionable_ui || display?.has_visible_actionable_ui);
     const showScrollHints = !target && !hasVisibleActionableUI && Boolean(guide || display);
-    if (showScrollHints && documentHeight > innerHeight * 1.03 && scrollY + innerHeight < documentHeight - 2) {
-      hints.push({ arrow: "↓", label: "아래쪽 방향으로 스크롤", edge: "bottom" });
+    const verticalOverflow = documentHeight > innerHeight * 1.03;
+    const horizontalOverflow = documentWidth > innerWidth * 1.03;
+    if (!display?.monitoring) {
+      monitorPlanKey = "";
+      monitorPlan = null;
+    } else {
+      const key = `${location.origin}${location.pathname}:${display.goal || guide?.goal || ""}`;
+      if (key !== monitorPlanKey || !monitorPlan) {
+        monitorPlanKey = key;
+        monitorPlan = {
+          vertical: verticalOverflow ? (scrollY + innerHeight < documentHeight - 2 ? "down" : scrollY > 2 ? "up" : null) : null,
+          horizontal: horizontalOverflow ? (scrollX + innerWidth < documentWidth - 2 ? "right" : scrollX > 2 ? "left" : null) : null,
+          documentHeight,
+          documentWidth
+        };
+      }
+      // If a dynamic page grows after the current scan, allow one forward pass
+      // into the newly added range without reversing the user's scroll direction.
+      if (documentHeight > monitorPlan.documentHeight + 2) {
+        monitorPlan.documentHeight = documentHeight;
+        if (!monitorPlan.vertical && scrollY + innerHeight < documentHeight - 2) monitorPlan.vertical = "down";
+      }
+      if (documentWidth > monitorPlan.documentWidth + 2) {
+        monitorPlan.documentWidth = documentWidth;
+        if (!monitorPlan.horizontal && scrollX + innerWidth < documentWidth - 2) monitorPlan.horizontal = "right";
+      }
     }
-    if (showScrollHints && hints.length === 0 && documentWidth > innerWidth * 1.03) {
-      if (scrollX + innerWidth < documentWidth - 2) hints.push({ arrow: "→", label: "오른쪽 방향으로 스크롤", edge: "right" });
-      else if (scrollX > 0) hints.push({ arrow: "←", label: "왼쪽 방향으로 스크롤", edge: "left" });
+    if (showScrollHints && display?.monitoring && monitorPlan) {
+      if (monitorPlan.vertical === "down") {
+        if (scrollY + innerHeight < documentHeight - 2) hints.push({ arrow: "↓", label: "아래쪽 방향으로 스크롤", edge: "bottom" });
+        else monitorPlan.vertical = null;
+      } else if (monitorPlan.vertical === "up") {
+        if (scrollY > 2) hints.push({ arrow: "↑", label: "위쪽 방향으로 스크롤", edge: "top" });
+        else monitorPlan.vertical = null;
+      }
+      if (!hints.length && !monitorPlan.vertical) {
+        if (monitorPlan.horizontal === "right") {
+          if (scrollX + innerWidth < documentWidth - 2) hints.push({ arrow: "→", label: "오른쪽 방향으로 스크롤", edge: "right" });
+          else monitorPlan.horizontal = null;
+        } else if (monitorPlan.horizontal === "left") {
+          if (scrollX > 2) hints.push({ arrow: "←", label: "왼쪽 방향으로 스크롤", edge: "left" });
+          else monitorPlan.horizontal = null;
+        }
+      }
+    } else if (showScrollHints && !display?.monitoring) {
+      if (verticalOverflow && scrollY + innerHeight < documentHeight - 2) hints.push({ arrow: "↓", label: "아래쪽 방향으로 스크롤", edge: "bottom" });
+      else if (horizontalOverflow && scrollX + innerWidth < documentWidth - 2) hints.push({ arrow: "→", label: "오른쪽 방향으로 스크롤", edge: "right" });
     }
-    if (showScrollHints && hints.length === 0 && documentHeight > innerHeight * 1.03 && scrollY > 0) {
-      hints.push({ arrow: "↑", label: "위쪽 방향으로 스크롤", edge: "top" });
-    }
-    if (showScrollHints && hints.length === 0 && display?.monitoring) {
-      hints.push({ arrow: "↕", label: "스크롤하거나 메뉴를 열어 UI 표시", edge: "bottom" });
+    if (showScrollHints && hints.length === 0 && display?.monitoring && !verticalOverflow && !horizontalOverflow) {
+      hints.push({ arrow: "•", label: "메뉴를 열거나 UI를 표시하세요", edge: "bottom" });
     }
     const key = `${guide?.id || ""}:${transparency}:${target ? elementLabel(target) : ""}:${rect ? `${Math.round(rect.left)}:${Math.round(rect.top)}:${Math.round(rect.width)}:${Math.round(rect.height)}` : ""}:${hints.map(hint => hint.edge).join(",")}`;
     if (!target && !hints.length) { clearOverlay(); return; }

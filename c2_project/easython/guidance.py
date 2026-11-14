@@ -56,7 +56,7 @@ def search_query_from_goal(goal: str) -> str:
 
 def is_visual_info_request(goal: str) -> bool:
     asks_to_view = re.search(
-        r"보여|보이|보고\s*싶|확인하고\s*싶|표시해|알려줘|알려\s*주|읽어|정리해|내용을?\s*확인|목록|정보를?\s*보|(?:기여자|contributors?|목록|레포지토리|repository).{0,16}(?:확인|보기|보여|표시|읽어)|(?:확인|보기|보여|표시).{0,16}(?:기여자|contributors?|목록)|show|display|view|see|read|list|what\s+are",
+        r"보여|보이|보고\s*싶|확인하고\s*싶|표시해|알려줘|알려\s*주|읽어|정리해|내용을?\s*확인|정보.{0,8}(?:확인|보기|읽어|열어)|(?:확인|보기|읽어).{0,8}정보|목록|정보를?\s*보|(?:기여자|contributors?|목록|레포지토리|repository).{0,16}(?:확인|보기|보여|표시|읽어)|(?:확인|보기|보여|표시).{0,16}(?:기여자|contributors?|목록)|show|display|view|see|read|list|what\s+are",
         goal,
         flags=re.IGNORECASE,
     )
@@ -123,16 +123,25 @@ def action_text_for_target(
 def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
     """Guide a visible candidate, optionally requiring verified interaction reachability."""
     global guide_counter
+    visual_info_request = is_visual_info_request(goal)
     current_action = labeled_answer_line(answer, ("현재 화면에서 할 동작", "현재 동작", "이번 동작"))
     route = labeled_answer_line(answer, ("접근 경로", "이용 경로", "목표까지 경로"))
     route_position = labeled_answer_line(answer, ("현재 위치", "현재 경로 위치"))
     with state_lock:
-        if route:
+        if visual_info_request:
+            # Viewing information should stay on this page; discard a stale/model
+            # route that would send the user to another tab or page.
+            route = "현재 페이지에서 정보 확인"
+            route_position = str(page.get("title", "현재 화면"))
             state["planned_route"] = route
-        if route_position:
             state["route_position"] = route_position
-        route = str(state.get("planned_route", ""))
-        route_position = str(state.get("route_position", "")) or str(page.get("title", "현재 화면"))
+        else:
+            if route:
+                state["planned_route"] = route
+            if route_position:
+                state["route_position"] = route_position
+            route = str(state.get("planned_route", ""))
+            route_position = str(state.get("route_position", "")) or str(page.get("title", "현재 화면"))
         accessibility_check = bool(state.get("accessibility_check", False))
     has_visible_actionable_ui = any(
         bool(element.get("in_view")) and (bool(element.get("actionable")) or bool(element.get("hover_actionable")))
@@ -150,6 +159,24 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             # Stable targets rank first, but a moving clickable control remains
             # eligible when it is the only matching visible target.
             matches.append((bool(element.get("stable")), can_guide, len(label), element))
+    if visual_info_request:
+        current_url = urlsplit(str(page.get("url", "")))
+        current_path = current_url.path.rstrip("/") or "/"
+        # Do not guide to a link that leaves the current page for a read-only
+        # information request. In-page anchors and non-link expand/scroll UI
+        # remain eligible.
+        def stays_on_current_page(element: dict[str, Any]) -> bool:
+            if element.get("info_region") or str(element.get("tag", "")).lower() != "a":
+                return True
+            href = str(element.get("href", "")).strip()
+            if not href:
+                return True
+            destination = urlsplit(href)
+            if destination.netloc and destination.netloc.lower() != current_url.netloc.lower():
+                return False
+            destination_path = destination.path.rstrip("/") or current_path
+            return destination_path == current_path
+        matches = [item for item in matches if stays_on_current_page(item[3])]
     matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     target = matches[0][3] if matches else None
     has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
@@ -183,6 +210,8 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             state["display"] = display_hint
         if search_query:
             return f"입력할 검색어: ‘{search_query}’. {route_note} 목표 UI가 보이지 않습니다. 화면을 스크롤하거나 메뉴를 열어 필요한 UI를 표시해 주세요. 표시될 때까지 화면을 자동으로 확인합니다."
+        if visual_info_request:
+            return f"{route_note} 현재 화면에서 요청한 정보를 찾지 못했습니다. 다른 페이지로 이동하기 전에 현재 페이지를 스크롤하거나 ‘더 보기/펼치기’ UI를 사용해 정보를 표시해 주세요. 표시될 때까지 현재 페이지를 자동으로 확인합니다."
         if accessibility_check and has_visible_actionable_ui:
             return f"{route_note} 현재 화면에 조작 가능한 UI가 있지만 다음 경로 UI를 특정하지 못했습니다. 해당 메뉴나 옵션을 열거나 마우스를 올린 뒤 화면을 다시 전송하세요."
         if not accessibility_check and has_visible_candidate_ui:
