@@ -277,7 +277,17 @@
   const observer = new MutationObserver(() => {
     if (!latestData) return;
     clearTimeout(redrawTimer);
-    redrawTimer = setTimeout(() => drawGuide(latestData.guide, latestData.display, latestData.transparency), 90);
+    redrawTimer = setTimeout(() => {
+      redrawTimer = null;
+      // pollGuide may clear latestData while this redraw is queued (for example,
+      // when the local app briefly disconnects). Read it only after checking it.
+      const data = latestData;
+      if (!data) {
+        clearOverlay();
+        return;
+      }
+      drawGuide(data.guide ?? null, data.display ?? null, data.transparency ?? 10);
+    }, 90);
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
 

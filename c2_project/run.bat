@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal
 cd /d "%~dp0"
 set "EASYTHON_PYTHON=%~dp0.venv\Scripts\python.exe"
@@ -19,7 +19,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%EASYTHON_PYTHON%" app.py
+"%EASYTHON_PYTHON%" main.py
 if errorlevel 1 (
     echo.
     echo Easython could not start. Review the error above.

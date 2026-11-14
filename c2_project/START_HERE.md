@@ -3,8 +3,8 @@
 ## 설치 및 AI 제공자 설정
 
 1. 프로젝트 파일을 모두 같은 폴더에 둡니다. `install.bat` 하나가 Python 설치 여부를 먼저 확인하고, 없으면 동봉된 Python 3.14.10을 설치한 다음 이어서 라이브러리 설치와 검증을 진행합니다.
-2. `install.bat`은 프로젝트 전용 `.venv`에 `requirements.txt` 라이브러리를 설치하고 버전 조건을 검증합니다. 새 라이브러리를 `requirements.txt`에 추가하면 다음 설치 때 자동으로 반영됩니다. 직접 앱을 실행할 때는 `.venv\Scripts\python.exe app.py`를 사용하세요.
-3. `run.bat`을 실행합니다. 앱은 API 키 없이도 시작합니다. 메인 화면의 **AI 제공자**에서 NVIDIA NIM 또는 Groq를 선택한 뒤 **API 키 설정**을 누릅니다. Groq 기본 모델은 `openai/gpt-oss-20b`입니다. 발급 페이지에서 키를 만든 후 입력하면 짧은 연결 확인 요청을 보내고 Windows 자격 증명 저장소에 보관합니다. 확인 요청에는 제공자 계정 한도나 요금이 적용될 수 있습니다.
+2. `install.bat`은 프로젝트 전용 `.venv`에 `requirements.txt` 라이브러리를 설치하고 버전 조건을 검증합니다. 새 라이브러리를 `requirements.txt`에 추가하면 다음 설치 때 자동으로 반영됩니다. 직접 앱을 실행할 때는 `.venv\Scripts\python.exe main.py`를 사용하세요.
+3. `run.bat`을 실행합니다. 실행 진입점은 `main.py`이며, 화면·서버·AI 제공자·HTML 추출·OpenCV 분석·가이드 기능은 `easython` 폴더의 모듈로 분리되어 있습니다. `app.py`는 기존 실행 경로 호환용 진입점입니다. 앱은 API 키 없이도 시작합니다. 메인 화면의 **AI 제공자**에서 NVIDIA NIM 또는 Groq를 선택한 뒤 **API 키 설정**을 누릅니다. Groq 기본 모델은 `openai/gpt-oss-20b`입니다. 발급 페이지에서 키를 만든 후 입력하면 짧은 연결 확인 요청을 보내고 Windows 자격 증명 저장소에 보관합니다. 확인 요청에는 제공자 계정 한도나 요금이 적용될 수 있습니다.
 
 기본 GLM-5.3-Flash 요청에는 `reasoning_effort=max`와 최대 출력 토큰 4,096개를 지정합니다. NVIDIA API 요청량 추정에도 이 출력 한도를 포함합니다.
 4. 제공자별 키는 별도로 저장되며, 제공자를 바꿔 **API 키 설정**을 열면 해당 제공자의 키를 등록하거나 교체할 수 있습니다. 모델 입력란에는 제공자별 기본 모델이 자동 선택됩니다. 직접 다른 모델명을 입력할 수도 있습니다. 프로그램을 업데이트한 경우 기존 Easython 창을 모두 닫고 `run.bat`으로 다시 실행하세요. 메인 창에서는 모델·키·분석 상태를 관리합니다.
@@ -54,3 +54,16 @@ API 응답의 `choices`, `message`, `content`가 누락되거나 `content`가 nu
 
 
 
+
+
+## 코드 구성
+
+- `main.py`: 앱 진입점
+- `easython/desktop.py`: 데스크톱 UI와 앱 흐름
+- `easython/server.py`: Chrome 확장 통신
+- `easython/provider.py`: NVIDIA NIM/Groq 요청과 토큰 속도 조절
+- `easython/html_inventory.py`: HTML UI 메타데이터 추출
+- `easython/vision.py`: OpenCV 화면 분석
+- `easython/guidance.py`: 페이지 분석 및 가이드 대상 선택
+- `easython/config.py`: 공용 설정과 실행 상태
+- `app.py`: 기존 실행 방식 호환용
