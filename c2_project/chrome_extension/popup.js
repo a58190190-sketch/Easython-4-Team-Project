@@ -3,6 +3,9 @@ const button = document.getElementById("send");
 const goalInput = document.getElementById("goal");
 const opacity = document.getElementById("opacity");
 const opacityValue = document.getElementById("opacityValue");
+const analysisProgress = document.getElementById("analysisProgress");
+const analysisPercent = document.getElementById("analysisPercent");
+const analysisPhase = document.getElementById("analysisPhase");
 const BRIDGE_ORIGIN = "http://127.0.0.1/*";
 let bridgeGranted = false;
 let opacityTimer = null;
@@ -34,11 +37,43 @@ async function loadGuideSettings() {
     const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
     if (!response.ok) return;
     const data = await response.json();
+    renderAnalysisStatus(data.analysis);
     opacity.value = String(data.transparency ?? 10);
     opacityValue.value = opacity.value + "%";
     msg.textContent = "현재 탭에서 동작하며, 새 페이지에는 자동으로 접근하지 않습니다.";
   } catch (_) {
     msg.textContent = "Python 앱을 먼저 실행하세요.";
+  }
+}
+
+function renderAnalysisStatus(status) {
+  if (!status || typeof status !== "object") {
+    analysisProgress.removeAttribute("value");
+    analysisPercent.textContent = "상태 대기";
+    analysisPhase.textContent = "앱에서 분석 상태를 받으면 여기에 표시합니다.";
+    return;
+  }
+  const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
+  const phase = String(status.phase || (status.busy ? "분석 중" : "분석 대기"));
+  if (status.busy && status.indeterminate) {
+    analysisProgress.removeAttribute("value");
+    analysisPercent.textContent = "진행 중";
+  } else {
+    analysisProgress.value = progress;
+    analysisPercent.textContent = `${progress}%`;
+  }
+  analysisPhase.textContent = phase;
+}
+
+async function pollAnalysisStatus() {
+  if (!bridgeGranted) return;
+  try {
+    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
+    if (!response.ok) return;
+    renderAnalysisStatus((await response.json()).analysis);
+  } catch (_) {
+    analysisPercent.textContent = "연결 끊김";
+    analysisPhase.textContent = "Python 앱 연결을 확인하세요.";
   }
 }
 
@@ -370,3 +405,4 @@ button.addEventListener("click", async () => {
 });
 
 loadGuideSettings();
+setInterval(pollAnalysisStatus, 800);

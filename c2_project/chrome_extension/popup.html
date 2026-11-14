@@ -4,6 +4,10 @@
   body{font:14px Arial,sans-serif;width:330px;padding:12px;color:#172033}
   button{width:100%;padding:9px;background:#2563eb;color:white;border:0;border-radius:5px;cursor:pointer}
   #msg{margin-top:10px;color:#333;line-height:1.4}
+  .analysis{margin:12px 0;padding:10px;background:#f3f6fb;border-radius:6px}
+  .analysis-head{display:flex;justify-content:space-between;gap:8px;align-items:center;font-weight:600;font-size:12px}
+  #analysisProgress{width:100%;height:10px;margin-top:7px;accent-color:#2563eb}
+  #analysisPhase{margin-top:4px;color:#555;font-size:12px;line-height:1.35}
   label{display:block;font-weight:600;margin:10px 0 5px}
   textarea{box-sizing:border-box;width:100%;min-height:76px;resize:vertical;padding:8px;border:1px solid #9aa4b2;border-radius:5px;font:14px Arial,sans-serif}
   .opacity{margin-top:16px;padding-top:12px;border-top:1px solid #ddd}
@@ -15,6 +19,11 @@
 <label for="goal">원하는 기능을 입력하세요</label>
 <textarea id="goal" maxlength="1200" placeholder="예: 재학 증명서를 출력하고 싶어요"></textarea>
 <button id="send">입력한 기능으로 현재 화면 분석</button>
+<section class="analysis" aria-live="polite">
+  <div class="analysis-head"><span>분석 진행률</span><span id="analysisPercent">연결 대기</span></div>
+  <progress id="analysisProgress" max="100"></progress>
+  <div id="analysisPhase">Python 앱에 연결하면 진행 상태를 표시합니다.</div>
+</section>
 <div class="opacity">
   <div class="opacity-head"><label for="opacity">가이드 투명도</label><output id="opacityValue">10%</output></div>
   <input id="opacity" type="range" min="0" max="100" step="1" value="10">
