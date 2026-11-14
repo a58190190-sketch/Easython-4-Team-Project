@@ -57,7 +57,7 @@ function renderAnalysisStatus(status) {
   const phase = String(status.phase || (status.busy ? "분석 중" : "분석 대기"));
   if (status.busy && status.indeterminate) {
     analysisProgress.removeAttribute("value");
-    analysisPercent.textContent = "진행 중";
+    analysisPercent.textContent = `예상 ${progress}%`;
   } else {
     analysisProgress.value = progress;
     analysisPercent.textContent = `${progress}%`;
