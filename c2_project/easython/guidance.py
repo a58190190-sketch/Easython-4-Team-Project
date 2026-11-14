@@ -65,11 +65,39 @@ def is_visual_info_request(goal: str) -> bool:
         goal,
         flags=re.IGNORECASE,
     )
-    return bool(asks_to_view and not asks_to_act)
+    # "로그인하는 방법 알려줘", "예약 어떻게 해?" ask HOW to do something, not to
+    # read information already on the page; "알려줘" alone must not lock the
+    # guide onto the current page.
+    asks_how_to = re.search(
+        r"방법|어떻게|하려면|하는\s*법|로그인|회원\s*가입|예약|떼|접수|결제|납부|how\s+to|log\s*in|sign\s*in",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    return bool(asks_to_view and not asks_to_act and not asks_how_to)
 
 def page_site_key(url: str) -> str:
     parsed = urlsplit(url)
     return parsed.netloc.lower()
+
+QUOTED_TEXT = re.compile(r"[‘'\"“「『]([^‘’'\"“”「」『』\n]{2,80})[’'\"”」』]")
+
+def label_match_score(label: str, match_folded: str, quotes_folded: list[str]) -> int:
+    """How well a screen element's label matches the AI's chosen action.
+
+    3: the whole label appears in the action (previous behaviour) or is quoted exactly.
+    2: the label starts with a quoted name. Card-style links put a title and a
+       description in one label (e.g. '간편인증 네이버, 카카오 ... 로그인'), while the
+       AI quotes only the title (‘간편인증’); exact substring matching missed these.
+    0: no match.
+    """
+    folded = re.sub(r"\s+", " ", label).strip().casefold()
+    if len(folded) < 2:
+        return 0
+    if folded in match_folded or folded in quotes_folded:
+        return 3
+    if any(folded.startswith(quote) for quote in quotes_folded):
+        return 2
+    return 0
 
 def labeled_answer_line(answer: str, labels: tuple[str, ...]) -> str:
     cleaned = re.sub(r"[*_`#>]", "", answer)
@@ -152,14 +180,20 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
     has_visible_guide_ui = has_visible_actionable_ui or (not accessibility_check and has_visible_candidate_ui)
     match_text = current_action or answer
     match_folded = re.sub(r"\s+", " ", match_text).casefold()
+    quotes_folded = [
+        re.sub(r"\s+", " ", quote).strip().casefold()
+        for quote in QUOTED_TEXT.findall(match_text)
+        if len(quote.strip()) >= 2
+    ]
     matches = []
     for element in page.get("elements", []):
         label = re.sub(r"\s+", " ", str(element.get("label", ""))).strip()
         can_guide = bool(element.get("actionable") or element.get("hover_actionable"))
-        if len(label) >= 2 and label.casefold() in match_folded and element.get("in_view") and (can_guide or not accessibility_check or element.get("info_region")):
-            # Stable targets rank first, but a moving clickable control remains
-            # eligible when it is the only matching visible target.
-            matches.append((bool(element.get("stable")), can_guide, len(label), element))
+        score = label_match_score(label, match_folded, quotes_folded)
+        if score and element.get("in_view") and (can_guide or not accessibility_check or element.get("info_region")):
+            # Better label matches rank first; then stable targets, but a moving
+            # clickable control remains eligible when it is the only match.
+            matches.append((score, bool(element.get("stable")), can_guide, len(label), element))
     if visual_info_request:
         current_url = urlsplit(str(page.get("url", "")))
         current_path = current_url.path.rstrip("/") or "/"
@@ -173,13 +207,16 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             if not href:
                 return True
             destination = urlsplit(href)
+            # javascript:void(0) / "#" links run in-page script; they do not leave.
+            if destination.scheme not in ("", "http", "https") or href.startswith("#"):
+                return True
             if destination.netloc and destination.netloc.lower() != current_url.netloc.lower():
                 return False
             destination_path = destination.path.rstrip("/") or current_path
             return destination_path == current_path
-        matches = [item for item in matches if stays_on_current_page(item[3])]
-    matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    target = matches[0][3] if matches else None
+        matches = [item for item in matches if stays_on_current_page(item[4])]
+    matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+    target = matches[0][4] if matches else None
     has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
     search_intent = bool(re.search(r"검색|찾|조회|출력|발급|신청", goal))
     search_query = search_query_from_goal(goal) if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) else ""

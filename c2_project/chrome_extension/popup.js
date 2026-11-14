@@ -6,9 +6,17 @@ const opacityValue = document.getElementById("opacityValue");
 const analysisProgress = document.getElementById("analysisProgress");
 const analysisPercent = document.getElementById("analysisPercent");
 const analysisPhase = document.getElementById("analysisPhase");
-const BRIDGE_ORIGIN = "http://127.0.0.1/*";
-let bridgeGranted = false;
+const BRIDGE = "http://127.0.0.1:8765";
+const CLIENT_HEADERS = { "Content-Type": "application/json", "X-Easython-Client": "extension" };
+// Optional "all sites" access lets the guide follow the user to the next page,
+// another site (e.g. a library or login site) or a newly opened tab.
+const SITE_ACCESS = { origins: ["<all_urls>"] };
+let siteAccessGranted = false;
 let opacityTimer = null;
+
+function bridgeFetch(path, options = {}) {
+  return fetch(BRIDGE + path, { cache: "no-store", ...options, headers: { ...CLIENT_HEADERS, ...(options.headers || {}) } });
+}
 
 goalInput.value = localStorage.getItem("easython-goal") || "";
 goalInput.addEventListener("input", () => localStorage.setItem("easython-goal", goalInput.value));
@@ -19,28 +27,23 @@ goalInput.addEventListener("keydown", event => {
   }
 });
 
-async function ensureBridgePermission() {
-  if (!bridgeGranted) {
-    bridgeGranted = await chrome.permissions.request({ origins: [BRIDGE_ORIGIN] });
-  }
-  return bridgeGranted;
-}
-
 async function loadGuideSettings() {
   try {
-    bridgeGranted = await chrome.permissions.contains({ origins: [BRIDGE_ORIGIN] });
-    if (!bridgeGranted) {
-      msg.textContent = "버튼을 누르면 현재 탭 접근 권한과 로컬 앱 연결 권한을 요청합니다.";
-      return;
-    }
-    fetch("http://127.0.0.1:8765/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
-    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
+    siteAccessGranted = await chrome.permissions.contains(SITE_ACCESS);
+  } catch (_) {
+    siteAccessGranted = false;
+  }
+  try {
+    bridgeFetch("/heartbeat", { method: "POST", body: "{}" }).catch(() => {});
+    const response = await bridgeFetch("/guide");
     if (!response.ok) return;
     const data = await response.json();
     renderAnalysisStatus(data.analysis);
     opacity.value = String(data.transparency ?? 10);
     opacityValue.value = opacity.value + "%";
-    msg.textContent = "현재 탭에서 동작하며, 새 페이지에는 자동으로 접근하지 않습니다.";
+    msg.textContent = siteAccessGranted
+      ? "목표를 달성할 때까지 다음 페이지와 새 탭에서도 안내를 이어갑니다."
+      : "버튼을 누르면 페이지를 옮겨도 안내를 이어갈 수 있도록 사이트 접근 권한을 한 번 요청합니다.";
   } catch (_) {
     msg.textContent = "Python 앱을 먼저 실행하세요.";
   }
@@ -66,9 +69,8 @@ function renderAnalysisStatus(status) {
 }
 
 async function pollAnalysisStatus() {
-  if (!bridgeGranted) return;
   try {
-    const response = await fetch("http://127.0.0.1:8765/guide", { cache: "no-store" });
+    const response = await bridgeFetch("/guide");
     if (!response.ok) return;
     renderAnalysisStatus((await response.json()).analysis);
   } catch (_) {
@@ -79,16 +81,11 @@ async function pollAnalysisStatus() {
 
 opacity.addEventListener("input", async () => {
   opacityValue.value = opacity.value + "%";
-  if (!await ensureBridgePermission()) {
-    msg.textContent = "투명도를 적용하려면 로컬 앱 연결 권한이 필요합니다.";
-    return;
-  }
   clearTimeout(opacityTimer);
   opacityTimer = setTimeout(async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8765/guide/settings", {
+      const response = await bridgeFetch("/guide/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transparency: Number(opacity.value) })
       });
       if (!response.ok) throw new Error();
@@ -106,19 +103,21 @@ button.addEventListener("click", async () => {
     goalInput.focus();
     return;
   }
+  // permissions.request must start synchronously inside the click (user gesture),
+  // before any other await. Declining keeps the old single-page behaviour.
+  const siteAccessRequest = siteAccessGranted
+    ? Promise.resolve(true)
+    : chrome.permissions.request(SITE_ACCESS).catch(() => false);
   button.disabled = true;
   msg.textContent = "현재 화면과 입력한 기능을 앱으로 전송 중…";
   try {
-    if (!await ensureBridgePermission()) {
-      throw new Error("Easython 로컬 앱 연결 권한이 필요합니다.");
-    }
+    siteAccessGranted = await siteAccessRequest;
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id || !/^https?:/.test(tab.url || "")) {
       throw new Error("일반 http/https 웹페이지에서 실행해 주세요.");
     }
-    const policyResponse = await fetch("http://127.0.0.1:8765/capture-policy", {
+    const policyResponse = await bridgeFetch("/capture-policy", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: tab.url, goal })
     });
     if (!policyResponse.ok) throw new Error("수집 범위를 확인하지 못했습니다. Python 앱 연결을 확인하세요.");
@@ -397,19 +396,20 @@ button.addEventListener("click", async () => {
       ? await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 65 })
       : undefined;
     const capture = { ...page, ...(screenshot ? { screenshot } : {}), goal };
-    const response = await fetch("http://127.0.0.1:8765/capture", {
+    const response = await bridgeFetch("/capture", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(capture)
     });
     if (!response.ok) throw new Error(`Python 앱 응답 오류 (${response.status})`);
-    chrome.runtime.sendMessage({
+    await chrome.runtime.sendMessage({
       type: "EASYTHON_SESSION_START",
       tabId: tab.id,
       url: tab.url,
       goal
     }).catch(() => {});
-    msg.textContent = "전송 완료. Easython 앱에서 분석하고 웹페이지에 가이드를 표시합니다.";
+    msg.textContent = siteAccessGranted
+      ? "전송 완료. 목표를 달성할 때까지 페이지를 옮겨도 자동으로 안내를 이어갑니다."
+      : "전송 완료. 사이트 접근 권한이 없어 이 페이지에서만 안내합니다. 페이지를 옮기면 다시 전송해 주세요.";
   } catch (error) {
     msg.textContent = error.message || "페이지 전송에 실패했습니다.";
   } finally {

@@ -21,6 +21,9 @@ from .config import *
 from .guidance import *
 from .provider import *
 from .server import start_server
+from .flow import apply_response, status_guide
+from .schema import extract_json_object, validate_guidance
+from .session import MAX_QUESTIONS, current_goal, current_session, start_session, stop_session
 from .vision import analyze_capture
 
 def main() -> None:
@@ -250,15 +253,12 @@ def main() -> None:
         if not has_key and not configure_api_key():
             analysis_status_label.config(text="API 키를 등록한 뒤 확장 프로그램에서 현재 화면을 다시 보내세요.", fg="#b91c1c")
             return
-        if is_new_goal:
+        # A session reopened from the page ("아직 안 끝났어요") keeps its progress.
+        if is_new_goal and current_goal() != goal:
             history = []
-            with state_lock:
-                state["planned_route"] = ""
-                state["route_position"] = ""
+            start_session(goal)
         last_goal = goal
         active_goal = goal
-        with state_lock:
-            state["navigation_session"] = True
         append_chat("나", goal)
         with state_lock:
             state["accessibility_check"] = False
@@ -280,8 +280,8 @@ def main() -> None:
             return
         active_goal = last_goal
         guide_active = True
-        with state_lock:
-            state["navigation_session"] = True
+        # Replay restarts the goal from the current screen with fresh progress.
+        start_session(active_goal)
         history = []
         with state_lock:
             state["accessibility_check"] = True
@@ -327,19 +327,36 @@ def main() -> None:
             accessibility_check = bool(state.get("accessibility_check", False))
         analysis_status_label.config(text="현재 화면 요소만 분석 중…" if screen_only else "현재 페이지 규모와 예상 요청량 계산 중…", fg="#555")
 
+        session = current_session()
+        session_context = session.prompt_context() if session else None
+        questions_asked = session.questions_asked if session else MAX_QUESTIONS
+
         def work() -> None:
+            structured = None
+            answer = ""
             try:
-                answer = visible_information_answer(page_snapshot, goal)
-                if answer is None:
+                correction = ""
+                # One corrective retry when the reply is not usable JSON for this screen.
+                for _attempt in range(2):
                     answer = call_nim(
                         page_snapshot, goal, conversation, selected_model, provider=selected_provider,
                         on_status=lambda text: ui_events.put(("analysis_status", text)),
                         screen_only=screen_only,
                         accessibility_check=accessibility_check,
+                        session_context=session_context,
+                        correction=correction,
                     )
+                    structured = validate_guidance(
+                        extract_json_object(answer), page_snapshot.get("elements", []),
+                        questions_asked=questions_asked, max_questions=MAX_QUESTIONS,
+                    )
+                    if structured:
+                        break
+                    correction = ("직전 응답을 사용할 수 없었다. 설명 없이 JSON 객체 하나만 다시 출력하고, "
+                                  "target_id는 visible_elements에 실제로 있는 id만 쓴다.")
             except Exception as exc:
                 answer = f"분석 오류: {exc}"
-            ui_events.put(("answer", (goal, answer, page_snapshot, revision_snapshot, site_key, screen_only)))
+            ui_events.put(("answer", (goal, answer, page_snapshot, revision_snapshot, site_key, screen_only, structured)))
         threading.Thread(target=work, daemon=True).start()
 
     def set_active_page(page: dict[str, Any], requested_goal: str = "") -> None:
@@ -388,8 +405,8 @@ def main() -> None:
         nonlocal guide_active, active_goal
         guide_active = False
         active_goal = None
+        stop_session()
         with state_lock:
-            state["navigation_session"] = False
             state["guide"] = None
             state["display"] = None
         stop_button.configure(state="disabled")
@@ -397,16 +414,47 @@ def main() -> None:
         analysis_status_label.config(text="화면 안내를 종료했습니다.", fg="#555")
         replay_button.configure(state="normal" if last_goal and current_page and not analysis_busy else "disabled")
 
+    def describe_guide(guide: dict[str, Any]) -> str:
+        """One line for the desktop transcript; the page shows the same sentence."""
+        status_name = {"next": "안내", "user_input": "직접 입력", "ask": "질문", "blocked": "잠시 멈춤", "done": "완료"}
+        text = f"[{status_name.get(guide.get('status'), '안내')}] {guide.get('say', '')}"
+        if guide.get("status") == "ask":
+            text += " · 선택지: " + ", ".join(option["label"] for option in guide.get("options", []))
+        if guide.get("input_hint"):
+            text += f" · {guide['input_hint']}"
+        if guide.get("risk"):
+            text += " · 중요한 단계(결과가 생기는 버튼)"
+        return text
+
+    def finish_goal() -> None:
+        """The AI judged the goal reached; flow.apply_response already ended the session."""
+        nonlocal guide_active, active_goal
+        guide_active = False
+        active_goal = None
+        stop_button.configure(state="disabled")
+        replay_button.configure(state="normal" if last_goal and current_page else "disabled")
+        analysis_status_label.config(text="목표를 달성해 안내를 마쳤습니다.", fg="#15803d")
+
     def pump_events() -> None:
-        nonlocal analysis_busy, analysis_progress, analysis_phase, analysis_animation_job
+        nonlocal analysis_busy, analysis_progress, analysis_phase, analysis_animation_job, guide_active, active_goal, last_goal
         try:
             while True:
                 kind, value = ui_events.get_nowait()
                 if kind == "capture":
                     page, goal = value
                     set_active_page(page, goal)
+                elif kind == "guide_note":
+                    append_chat("화면 가이드", str(value))
+                    guide_instruction_label.config(text=str(value))
+                elif kind == "reopen":
+                    # "아직 안 끝났어요" on the page: resume; the extension sends a fresh capture.
+                    if value:
+                        active_goal = last_goal = str(value)
+                        guide_active = True
+                        stop_button.configure(state="normal")
+                        append_chat("안내", "아직 끝나지 않았다는 답을 받아 이어서 안내합니다.")
                 elif kind == "answer":
-                    goal, answer, page_snapshot, revision_snapshot, site_key, screen_only = value
+                    goal, answer, page_snapshot, revision_snapshot, site_key, screen_only, structured = value
                     analysis_busy = False
                     if analysis_animation_job:
                         root.after_cancel(analysis_animation_job)
@@ -422,8 +470,24 @@ def main() -> None:
                     analysis_progress_label.config(text="분석 종료 · 100% · 오류" if request_failed else "분석 완료 · 100%")
                     if revision_snapshot == capture_revision:
                         history.append({"role": "assistant", "content": answer})
-                    append_chat("안내", answer)
-                    guide_note = update_page_guide(page_snapshot, answer, goal) if guide_active and revision_snapshot == capture_revision and not request_failed else ""
+                    if request_failed:
+                        append_chat("안내", answer)
+                    guide_note = ""
+                    is_current = guide_active and revision_snapshot == capture_revision
+                    if is_current and structured:
+                        shown = apply_response(page_snapshot, structured, goal)
+                        guide_note = describe_guide(shown)
+                        if shown["status"] == "done":
+                            finish_goal()
+                    elif is_current:
+                        status_guide(
+                            str(page_snapshot.get("url", "")), "blocked",
+                            "안내를 불러오지 못했어요. 잠시 뒤 ‘다시 안내’를 눌러 주세요." if request_failed
+                            else "다음 안내를 찾지 못했어요. ‘다시 안내’를 눌러 주세요.",
+                            goal,
+                        )
+                        if not request_failed:
+                            append_chat("AI 응답(해석 실패)", answer[:600])
                     if guide_note:
                         append_chat("화면 가이드", guide_note)
                         guide_instruction_label.config(text=guide_note)
@@ -442,9 +506,9 @@ def main() -> None:
                             advice = page_snapshot.get("display_advice", "")
                             message = f"권고: {advice}" if advice else "현재 화면에서 안내할 UI를 찾지 못했습니다. 필요한 UI가 있는 영역을 확인해 주세요."
                             screen_status.config(text=screen_text + f"\n{message}", fg="#FF0000" if advice else "#555")
-                    analysis_status_label.config(text=guide_note or "분석이 완료되었습니다. 안내된 동작을 마친 뒤 확장 프로그램에서 기능을 입력해 현재 화면을 다시 전송하세요.", fg="#15803d")
+                    analysis_status_label.config(text=guide_note or "분석이 완료되었습니다. 안내된 동작을 하면 다음 화면을 자동으로 분석합니다.", fg="#15803d")
                     if not guide_active:
-                        analysis_status_label.config(text="화면 안내를 종료했습니다.", fg="#555")
+                        analysis_status_label.config(text="목표를 달성해 안내를 마쳤습니다." if structured and structured.get("status") == "done" else "화면 안내를 종료했습니다.", fg="#555")
                     if revision_snapshot != capture_revision and guide_active and active_goal:
                         root.after(100, lambda: analyze_goal(active_goal or ""))
                     else:

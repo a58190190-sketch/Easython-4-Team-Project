@@ -19,8 +19,15 @@ KEYRING_SERVICE = "Easython"
 NIM_REQUESTS_PER_MINUTE = 6
 NIM_ESTIMATED_TOKENS_PER_MINUTE = 20_000
 MAX_CONTEXT_CHARS = 15_000
-state: dict[str, Any] = {"last_seen": 0.0, "capture": None, "capture_at": None, "guide": None, "display": None, "guide_transparency": 10, "planned_route": "", "route_position": "", "accessibility_check": False, "analyzed_sites": set(), "monitor_signature": "", "monitor_at": 0.0, "navigation_session": False, "analysis_status": {"busy": False, "progress": 0, "phase": "분석 대기"}}
-state_lock = threading.Lock()
+# Only the Chrome extension may talk to the local bridge. Web pages cannot send
+# this custom header cross-origin (it forces a CORS preflight the server rejects).
+CLIENT_HEADER = "X-Easython-Client"
+CLIENT_HEADER_VALUE = "extension"
+ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+# `session` holds the active GuideSession (see session.py); None when idle.
+state: dict[str, Any] = {"last_seen": 0.0, "capture": None, "capture_at": None, "guide": None, "display": None, "guide_transparency": 10, "planned_route": "", "route_position": "", "accessibility_check": False, "analyzed_sites": set(), "monitor_signature": "", "monitor_at": 0.0, "session": None, "last_session": None, "step_signature": "", "analysis_status": {"busy": False, "progress": 0, "phase": "분석 대기"}}
+# Re-entrant so session helpers can lock even when the HTTP handler already holds it.
+state_lock = threading.RLock()
 ui_events: queue.Queue[tuple[str, Any]] = queue.Queue()
 guide_counter = 0
 nim_rate_lock = threading.Lock()
