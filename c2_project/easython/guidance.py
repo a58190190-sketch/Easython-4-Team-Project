@@ -56,7 +56,7 @@ def search_query_from_goal(goal: str) -> str:
 
 def is_visual_info_request(goal: str) -> bool:
     asks_to_view = re.search(
-        r"보여|보이|보고\s*싶|확인하고\s*싶|표시해|알려줘|알려\s*주|읽어|정리해|내용을?\s*확인|정보.{0,8}(?:확인|보기|읽어|열어)|(?:확인|보기|읽어).{0,8}정보|목록|정보를?\s*보|(?:기여자|contributors?|목록|레포지토리|repository).{0,16}(?:확인|보기|보여|표시|읽어)|(?:확인|보기|보여|표시).{0,16}(?:기여자|contributors?|목록)|show|display|view|see|read|list|what\s+are",
+        r"보여|보이|보고\s*싶|확인|보기|열람|표시|읽어|정리해|목록|명단|현황|상태|이력|내역|정보|내용|자료|기록|show|display|view|see|read|list|what\s+are",
         goal,
         flags=re.IGNORECASE,
     )
@@ -77,17 +77,85 @@ def labeled_answer_line(answer: str, labels: tuple[str, ...]) -> str:
     match = re.search(rf"(?im)^\s*(?:{label_pattern})\s*[:：]\s*(.+?)\s*$", cleaned)
     return match.group(1).strip() if match else ""
 
+def repository_navigation_requested(goal: str) -> bool:
+    """Detect a request to enter a repository/resource before viewing its contents."""
+    return bool(re.search(r"레포지토리|저장소|\brepositories?\b|\brepos?\b", goal, re.IGNORECASE))
+
+def is_repository_entry(element: dict[str, Any]) -> bool:
+    """Recognize a visible resource link by URL shape, without assuming a host."""
+    if str(element.get("tag", "")).lower() != "a" or not element.get("in_view") or not element.get("actionable"):
+        return False
+    path = urlsplit(str(element.get("href", ""))).path
+    parts = [part for part in path.split("/") if part]
+    label = re.sub(r"\s+", " ", str(element.get("label", ""))).strip()
+    # A two-part path is a common owner/resource link. Nested group paths are
+    # accepted when the visible link itself names the path, as on many hosts.
+    return len(parts) == 2 or (len(parts) >= 3 and "/" in label)
+
+def html_control_for_target(target: dict[str, Any], controls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Find the HTML-extracted control corresponding to the visible DOM target."""
+    def normalize(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+    target_labels = {
+        normalize(target.get(key)) for key in ("label", "aria_label", "title", "placeholder")
+        if normalize(target.get(key))
+    }
+    target_href = urlsplit(str(target.get("href", ""))).path.rstrip("/")
+    best: tuple[int, dict[str, Any]] | None = None
+    for control in controls:
+        control_labels = {
+            normalize(control.get(key)) for key in ("text", "aria_label", "title", "placeholder")
+            if normalize(control.get(key))
+        }
+        score = 3 if target_labels & control_labels else 0
+        control_href = urlsplit(str(control.get("href", ""))).path.rstrip("/")
+        if target_href and control_href and target_href == control_href:
+            score = max(score, 3)
+        if score and (best is None or score > best[0]):
+            best = (score, control)
+    return best[1] if best else {}
+
+def interaction_instruction(
+    target: dict[str, Any], controls: list[dict[str, Any]], answer: str, goal: str, search_query: str = ""
+) -> str:
+    """Describe the supported interaction using live DOM and parsed HTML hints."""
+    if target.get("info_region"):
+        return "해당 영역 확인"
+    control = html_control_for_target(target, controls)
+    events = {
+        event.strip().lower()
+        for source in (target.get("events", ""), control.get("events", ""))
+        for event in (source if isinstance(source, list) else str(source).split(","))
+        if event.strip()
+    }
+    if target.get("hover_actionable"):
+        return "마우스를 올리기"
+    if "oncontextmenu" in events or target.get("context_menu_hint"):
+        menu_item = next((str(item.get("label", "")) for item in controls
+                          if item.get("in_view") and item.get("role") == "menuitem"
+                          and item.get("label") and (item["label"] in answer or item["label"] in goal)), "")
+        return f"우클릭 1회 → ‘{menu_item}’ 선택" if menu_item else "우클릭 1회"
+    if "ondblclick" in events or target.get("double_click_hint"):
+        return "좌클릭 2회"
+    if search_query:
+        return f"좌클릭 1회 → ‘{search_query}’ 입력 → Enter"
+    if str(target.get("action_type", "")) == "select":
+        return "좌클릭 1회 후 항목 선택"
+    hover_only = any(event in events for event in ("onmouseover", "onmouseenter", "onpointerover", "onpointerenter"))
+    click_available = str(target.get("tag", "")).lower() in ("a", "button", "input", "select", "textarea") or str(target.get("role", "")).lower() in ("button", "link", "menuitem", "tab") or any(event in events for event in ("onclick", "onmousedown"))
+    if hover_only and not click_available:
+        return "마우스를 올리기"
+    return "좌클릭 1회"
+
 def action_text_for_target(
     target: dict[str, Any], search_query: str, answer: str, goal: str, elements: list[dict[str, Any]]
 ) -> str:
     action_type = str(target.get("action_type", ""))
-    if target.get("info_region"):
-        label = re.sub(r"\s+", " ", str(target.get("label", "정보 영역"))).strip()[:100]
-        return f"현재 화면의 ‘{label}’ 영역에 표시된 요청 정보를 확인하세요."
-    if target.get("hover_actionable"):
-        revealed = [str(label) for label in target.get("hover_reveals", []) if str(label).strip()]
-        revealed_text = f" 팝업에서 ‘{revealed[0]}’ 등 표시된 항목을 확인하세요." if revealed else ""
-        return "마우스를 올려 메뉴를 표시하세요." + revealed_text
+    if target.get("info_region") or target.get("hover_actionable") or target.get("context_menu_hint") or target.get("double_click_hint") or search_query or action_type:
+        return interaction_instruction(target, elements, answer, goal, search_query)
+    if target.get("repository_entry"):
+        return "좌클릭 1회"
     if is_visual_info_request(goal):
         current_action = labeled_answer_line(answer, ("현재 화면에서 할 동작", "현재 동작", "이번 동작"))
         label = str(target.get("label", "")).strip()
@@ -177,9 +245,39 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
                 return False
             destination_path = destination.path.rstrip("/") or current_path
             return destination_path == current_path
-        matches = [item for item in matches if stays_on_current_page(item[3])]
+        if repository_navigation_requested(goal):
+            for item in matches:
+                if is_repository_entry(item[3]):
+                    item[3]["repository_entry"] = True
+        matches = [
+            item for item in matches
+            if stays_on_current_page(item[3])
+            or item[3].get("repository_entry")
+            or str(item[3].get("label", "")).casefold() in match_folded
+        ]
     matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     target = matches[0][3] if matches else None
+    if repository_navigation_requested(goal) and target is None:
+        repository_links = [
+            (index, element) for index, element in enumerate(page.get("elements", []))
+            if is_repository_entry(element)
+        ]
+        if repository_links:
+            repository_links.sort(key=lambda pair: (
+                bool(pair[1].get("stable")),
+                "/" in str(pair[1].get("label", "")),
+                -pair[0],
+            ), reverse=True)
+            target = dict(repository_links[0][1])
+            target["repository_entry"] = True
+            route = (
+                "현재 화면의 저장소 링크 → 저장소 안에서 요청한 정보 확인"
+                if visual_info_request else "현재 화면의 저장소 링크 열기"
+            )
+            route_position = str(page.get("title", "현재 화면"))
+            with state_lock:
+                state["planned_route"] = route
+                state["route_position"] = route_position
     has_popular_keywords = bool(page.get("has_popular_keywords")) or any(element.get("popular_keyword") for element in page.get("elements", []))
     search_intent = bool(re.search(r"검색|찾|조회|출력|발급|신청", goal))
     search_query = search_query_from_goal(goal) if (has_popular_keywords or search_intent) and not is_visual_info_request(goal) else ""
@@ -250,8 +348,14 @@ def update_page_guide(page: dict[str, Any], answer: str, goal: str) -> str:
             "instruction": f"검색창에 ‘{search_query}’를 입력하세요" if search_query else "",
             "search_query": search_query,
             "accessibility_checked": accessibility_check,
-            "action_text": (action_text_for_target(target, search_query if target.get("is_search") else "", answer, goal, page.get("elements", [])) if accessibility_check else action_text_for_target(target, search_query if target.get("is_search") else "", answer, goal, page.get("elements", []))),
-            "action_card_text": (f"현재 위치: {route_position}\n" if route_position else "") + (action_text_for_target(target, search_query if target.get("is_search") else "", answer, goal, page.get("elements", [])) if accessibility_check else action_text_for_target(target, search_query if target.get("is_search") else "", answer, goal, page.get("elements", []))),
+            "action_text": action_text_for_target(
+                target, search_query if target.get("is_search") else "", answer, goal,
+                [*(page.get("elements", []) or []), *(page.get("controls", []) or [])],
+            ),
+            "action_card_text": action_text_for_target(
+                target, search_query if target.get("is_search") else "", answer, goal,
+                [*(page.get("elements", []) or []), *(page.get("controls", []) or [])],
+            ),
         }
         state["guide"] = guide
         state["display"] = None
@@ -287,25 +391,17 @@ def visible_information_answer(page: dict[str, Any], goal: str) -> str | None:
     if not terms:
         return None
 
-    aliases = (
-        (r"기여자", ("contributor", "기여자")),
-        (r"레포지토리|저장소", ("repository", "repo", "저장소")),
-        (r"릴리스|출시", ("release", "changelog", "릴리스")),
-        (r"공지|소식", ("announcement", "news", "공지")),
-        (r"문서|가이드", ("documentation", "docs", "guide", "문서")),
-        (r"회원|멤버|구성원", ("member", "members", "구성원")),
-        (r"이슈", ("issue", "issues", "이슈")),
-        (r"커밋", ("commit", "commits", "커밋")),
-        (r"활동", ("activity", "contribution", "활동")),
-    )
-
     def relevance(region: dict[str, Any]) -> tuple[int, bool, int]:
         label = re.sub(r"\s+", " ", str(region.get("label", ""))).strip()
         folded_label = label.casefold()
-        score = sum(1 for term in terms if term in folded_label or folded_label in term)
-        for pattern, words in aliases:
-            if re.search(pattern, goal, re.IGNORECASE) and any(word.casefold() in folded_label for word in words):
-                score += 2
+        label_terms = [term.casefold() for term in re.findall(r"[가-힣]{2,}|[a-z0-9]{2,}", folded_label)]
+        # Match the user's own topic words against labels discovered on this page.
+        score = sum(
+            1 for term in terms
+            if term in folded_label or any(label_term in term or term in label_term for label_term in label_terms)
+        )
+        if label and folded_label in " ".join(term.casefold() for term in terms):
+            score += 1
         return score, bool(region.get("stable", False)), len(label)
 
     visible_region = max(regions, key=relevance)
